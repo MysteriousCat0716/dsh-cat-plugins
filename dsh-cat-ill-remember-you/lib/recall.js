@@ -158,6 +158,7 @@ function weakScoreOf(db, terms, text, weightOf, countStmt) {
   const body = String(text ?? '');
   let score = 0;
   let hits = 0;
+  let maxWeight = 0;
   for (const term of terms) {
     const tf = countOccurrences(body, term);
     if (tf === 0) continue;
@@ -169,10 +170,12 @@ function weakScoreOf(db, terms, text, weightOf, countStmt) {
       weightOf.set(term, weight);
     }
     score += Math.min(tf, 3) * weight;
+    maxWeight = Math.max(maxWeight, weight);
   }
-  // hits 也交回去：单个 3 字窗口的重合大多是巧合（「压缩要」也能对上
-  // 一篇讲 VS Code 的正文），要求至少两个不同窗口同时命中才认。
-  return { score, hits };
+  // hits 与 maxWeight 一起交回去：单个窗口的重合大多是巧合（「压缩要」也能对上
+  // 一篇讲 VS Code 的正文），要求至少两个不同窗口命中才认——除非命中的那个词
+  // 本身就很稀有（全库只在一两条里出现，df <= 2，权重 >= 0.7）。
+  return { score, hits, maxWeight };
 }
 
 /** Pull the scene out of a stored `当时：…｜依据：…` why. */
@@ -452,7 +455,7 @@ export async function retrieve(
     const rows = db
       .prepare(
         `SELECT id, kind, summary, text, entities, anchors, t, mentions, confidence, retention FROM memories
-         WHERE tier = 'active' AND origin = 'chat'
+         WHERE tier = 'active' AND origin IN ('chat', 'unknown')
            AND EXISTS (SELECT 1 FROM json_each(memories.entities) WHERE json_each.value IN (${marks}))
          ORDER BY t DESC LIMIT 6`,
       )
@@ -483,7 +486,7 @@ export async function retrieve(
     const rows = db
       .prepare(
         `SELECT id, kind, summary, text, entities, anchors, t, mentions, confidence, retention FROM memories
-         WHERE tier = 'active' AND origin = 'chat'
+         WHERE tier = 'active' AND origin IN ('chat', 'unknown')
            AND EXISTS (SELECT 1 FROM json_each(memories.anchors) WHERE json_each.value IN (${marks}))
          ORDER BY t DESC LIMIT 6`,
       )
@@ -511,7 +514,7 @@ export async function retrieve(
   const cacheRows = db
     .prepare(
       `SELECT id, kind, summary, text, entities, anchors, t, mentions, confidence, retention FROM memories
-       WHERE tier = 'active' AND origin = 'chat' ORDER BY t DESC LIMIT ?`,
+       WHERE tier = 'active' AND origin IN ('chat', 'unknown') ORDER BY t DESC LIMIT ?`,
     )
     .all(CACHE_SIZE);
   for (const row of cacheRows) {
@@ -542,7 +545,7 @@ export async function retrieve(
     const rows = db
       .prepare(
         `SELECT id, kind, summary, text, entities, anchors, t, mentions, confidence, retention FROM memories
-         WHERE tier IN ('active','dormant') AND origin = 'chat' AND (${clauses.join(' OR ')})
+         WHERE tier IN ('active','dormant') AND origin IN ('chat', 'unknown') AND (${clauses.join(' OR ')})
          ORDER BY t DESC LIMIT 24`,
       )
       .all(...params);
@@ -584,7 +587,7 @@ export async function retrieve(
           const row = db
             .prepare(
               `SELECT id, kind, summary, text, entities, anchors, t, mentions, confidence, retention FROM memories
-               WHERE id = ? AND tier IN ('active','dormant') AND origin = 'chat'`,
+               WHERE id = ? AND tier IN ('active','dormant') AND origin IN ('chat', 'unknown')`,
             )
             .get(candidate.memory_id);
           if (!row) continue;
@@ -616,7 +619,7 @@ export async function retrieve(
       const rows = db
         .prepare(
           `SELECT id, kind, summary, text, entities, anchors, t, mentions, confidence, retention FROM memories
-           WHERE tier = 'active' AND origin = 'chat' AND (${like})
+           WHERE tier = 'active' AND origin IN ('chat', 'unknown') AND (${like})
            ORDER BY t DESC LIMIT 200`,
         )
         .all(...values);
@@ -628,8 +631,12 @@ export async function retrieve(
       for (const row of rows) {
         const item = rowToItem(row, 'memory');
         if (seen.has(`memory:${item.id}`) || given.has(`memory:${item.id}`)) continue;
-        const { score } = weakScoreOf(db, terms, row.text, weightOf, countStmt);
-        if (score <= 0) {
+        const { score, hits, maxWeight } = weakScoreOf(db, terms, row.text, weightOf, countStmt);
+        // 单个词窗口的重合大多是巧合（「压缩要」也能撞上一篇讲 VS Code 的正文）。
+        // 短句本身只有一两个窗口，不强求两个；有得挑时要求至少两个不同窗口，
+        // 或者命中词本身就很稀有（df <= 2，权重 >= 0.7）。
+        const rare = maxWeight >= 0.7;
+        if (score <= 0 || (hits < Math.min(2, terms.length) && !rare)) {
           note(item, 'low-weak');
           continue;
         }

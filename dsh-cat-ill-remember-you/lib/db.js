@@ -21,7 +21,6 @@ CREATE TABLE IF NOT EXISTS turns (
 );
 CREATE INDEX IF NOT EXISTS idx_turns_pending ON turns (consumed, id);
 CREATE INDEX IF NOT EXISTS idx_turns_sid     ON turns (sid, seq);
-CREATE INDEX IF NOT EXISTS idx_turns_cwd_t   ON turns (cwd, t);
 
 CREATE TABLE IF NOT EXISTS memories (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -186,8 +185,6 @@ CREATE TABLE IF NOT EXISTS people (
 );
 CREATE INDEX IF NOT EXISTS idx_people_name ON people (name);
 
--- full 模式每轮都会写一行 shadow_v2，按 sid 查旧块时没有索引会全表扫。
-CREATE INDEX IF NOT EXISTS idx_shadow_v2_sid ON shadow_v2 (sid, applied);
 -- used 结算每轮跑两条语句（结算 UPDATE + 判定 SELECT），没有索引就是全表扫；
 -- 三段覆盖：sid 等值、used IS NULL、id DESC 排序。
 CREATE INDEX IF NOT EXISTS idx_recall_log_sid ON recall_log (sid, used, id);
@@ -255,6 +252,14 @@ export function openStore(file = DEFAULT_DB_FILE) {
     ensureColumn(db, 'turns', 'cwd', "TEXT NOT NULL DEFAULT ''");
     ensureColumn(db, 'shadow_v2', 'applied', 'INTEGER NOT NULL DEFAULT 0');
     ensureColumn(db, 'shadow_v2', 'cwd', "TEXT NOT NULL DEFAULT ''");
+    // 这两个索引依赖上面补的列（turns.cwd / shadow_v2.applied）。旧库里列还不
+    // 存在时，把 CREATE INDEX 写在 SCHEMA 里会先于 ALTER 执行并报
+    // `no such column: cwd`，整个 store 打不开——备份恢复会直接卡在这里。
+    // 所以建表用 SCHEMA，建「后加列上的索引」放在 ensureColumn 之后。
+    db.exec(`
+CREATE INDEX IF NOT EXISTS idx_turns_cwd_t   ON turns (cwd, t);
+CREATE INDEX IF NOT EXISTS idx_shadow_v2_sid ON shadow_v2 (sid, applied);
+`);
     // lost_ratio 的语义换过一次：老行存的是「关键 token 缺失比例」，
     // 新字段 token_keep 才是它。回填一次，新旧行才能放在同一张表里比。
     const addedTokenKeep = !db
@@ -303,8 +308,10 @@ export const DEFAULT_RESCAN_MS = 24 * 60 * 60 * 1000;
 export function pendingTurns(db, limit = 40, rescanMs = DEFAULT_RESCAN_MS) {
   return db
     .prepare(
+      // 只蒸馏召回层会读的来源：IM 通道的记忆明确不注入（recall 只查 chat/unknown），
+      // 在这里炼出来就是写了永远用不上的死数据。
       'SELECT id, sid, seq, role, origin, text, t FROM turns ' +
-        'WHERE consumed = 0 AND (scanned_at = 0 OR scanned_at < ?) ORDER BY id LIMIT ?',
+        "WHERE origin IN ('chat', 'unknown') AND consumed = 0 AND (scanned_at = 0 OR scanned_at < ?) ORDER BY id LIMIT ?",
     )
     .all(Date.now() - rescanMs, limit);
 }
@@ -313,7 +320,7 @@ export function pendingTurns(db, limit = 40, rescanMs = DEFAULT_RESCAN_MS) {
 export function pendingCount(db, rescanMs = DEFAULT_RESCAN_MS) {
   const row = db
     .prepare(
-      'SELECT COUNT(*) AS n FROM turns WHERE consumed = 0 AND (scanned_at = 0 OR scanned_at < ?)',
+      "SELECT COUNT(*) AS n FROM turns WHERE origin IN ('chat', 'unknown') AND consumed = 0 AND (scanned_at = 0 OR scanned_at < ?)",
     )
     .get(Date.now() - rescanMs);
   return Number(row?.n ?? 0);

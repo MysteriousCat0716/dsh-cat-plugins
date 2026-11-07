@@ -790,7 +790,7 @@ test('planShadowV2: 引用指针形式的大结果，替换块里留完整 refId
 });
 
 test('planShadowV2: 工具结果在 spill 上时，索引写目录而不是 seq', () => {
-  const spill = 'C:/tmp/spill/session-abc/1234-ops_bash.txt';
+  const spill = path.join(os.tmpdir(), 'dsh-spill-abc', 'session-abc', '1234-ops_bash.txt');
   const entries = [
     [1, 'user', '先看这个文件'],
     [2, 'assistant', '我去读'],
@@ -832,7 +832,7 @@ test('planShadowV2: 工具结果在 spill 上时，索引写目录而不是 seq'
     const plan = planShadowV2(session, db, { now: 1 });
     assert.ok(plan, 'full 模式应产出替换计划');
     assert.ok(plan.text.includes('ops_bash@4'));
-    assert.ok(plan.text.includes('C:/tmp/spill/session-abc'));
+    assert.ok(plan.text.includes(path.dirname(spill)));
     assert.ok(!plan.text.includes('按 seq 取回'));
   } finally {
     cleanup();

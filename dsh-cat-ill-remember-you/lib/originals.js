@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { zstdDecompressSync } from 'node:zlib';
 
 /**
@@ -109,16 +109,33 @@ export function refPointerOf(text) {
  */
 const SPILL_PATH = /Full formatted result stored at:\s*(.+?)\.?\s*Use read\b/i;
 
+/**
+ * spill 目录的权威来源是宿主的临时目录：`<tmp>/dsh-spill-XXXXXX/session-<hash>/…`。
+ * 日志文本可以被工具输出伪造，所以只在「确实落在这个前缀下」才认——否则一行
+ * `Full formatted result stored at: C:\Users\...\shadow_v2.db` 就能让插件把任意
+ * 文件当「工具原文」读进来，再送进记忆。
+ */
+const SPILL_ROOT_PATTERN = /^dsh-spill-[A-Za-z0-9]+$/;
+
+export function isSpillPath(path) {
+  if (typeof path !== 'string' || path.length === 0) return false;
+  const rel = relative(resolve(tmpdir()), resolve(path));
+  if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return false;
+  const first = rel.split(sep)[0] ?? '';
+  return SPILL_ROOT_PATTERN.test(first);
+}
+
 export function spillPathOf(text) {
   const value = String(text ?? '');
   const match = value.match(SPILL_PATH);
   const path = match ? match[1].trim() : '';
-  return path.startsWith('<') ? '' : path;
+  if (path.startsWith('<') || !isSpillPath(path)) return '';
+  return path;
 }
 
 /** 读 spill 文件；不存在、超上限、读失败都返回空串，让调用方退回正文预览。 */
 function readSpillText(path) {
-  if (typeof path !== 'string' || path.length === 0) return '';
+  if (!isSpillPath(path)) return '';
   try {
     if (!existsSync(path)) return '';
     const size = statSync(path).size;

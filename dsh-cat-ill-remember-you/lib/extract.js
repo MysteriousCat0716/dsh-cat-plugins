@@ -167,7 +167,7 @@ const ATTITUDE =
 
 // 我的表态：只有「我怎么想」这一类句子才值得立记忆。我的过程、我的技术决定
 // 不立——它们在 git、交接、日志里，取回来只会让三个月后的我把「我做过」当成
-// 「他定过」。见 记忆核心/设计-哪些话不建记忆-2026-11-04.md 第六节。
+// 「他定过」。见 docs/设计-哪些话不建记忆-2026-11-04.md 第六节。
 const SELF_STANCE = /我觉得|我认为|我在意|我不喜欢|我不想要|我希望自己|我想成为|我拒绝|我的判断|我更愿意/;
 
 // 我的过程句：这些是日志，不是判断。
@@ -369,7 +369,7 @@ function supersedesFor(db, item) {
   const rows = db
     .prepare(
       `SELECT id, entities FROM memories
-       WHERE kind = ? AND tier = 'active' AND origin = 'chat'
+       WHERE kind = ? AND tier = 'active' AND origin IN ('chat', 'unknown')
        ORDER BY t DESC LIMIT 30`,
     )
     .all(item.kind);

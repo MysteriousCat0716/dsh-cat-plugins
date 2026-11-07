@@ -177,7 +177,7 @@ test('toolResultsFromEvents: 按 callId 配工具名，大结果标出 ref', () 
 });
 
 test('spill: 工具结果被截断时，从磁盘读回全文', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'dsh-originals-spill-'));
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-spill-'));
   try {
     const file = join(dir, 'ab12cd34ef56-ops_bash.txt');
     writeFileSync(file, '全文第一行\n全文第二行', 'utf8');
@@ -196,7 +196,7 @@ test('spill: 工具结果被截断时，从磁盘读回全文', () => {
 });
 
 test('spill: 文件不在了就退回预览，不抛错', () => {
-  const missing = join(tmpdir(), 'dsh-originals-missing', 'missing.txt');
+  const missing = join(tmpdir(), 'dsh-spill-missing', 'missing.txt');
   const preview = `[Notice: 1 bytes omitted. Full formatted result stored at: ${missing}. Use read with offset/limit, or grep this path to search within it.]`;
   const events = [
     { type: 'tool/call', seq: 1, data: { calls: [{ callId: 'c1', name: 'read' }] } },
@@ -208,34 +208,22 @@ test('spill: 文件不在了就退回预览，不抛错', () => {
 });
 
 test('spillPathOf: 认新格式（开括号 + .txt），不认 <path> 占位', () => {
-  const real =
-    '(1234 bytes omitted. Full formatted result stored at: C:\\Users\\x\\AppData\\Local\\Temp\\dsh-spill-abc\\session-deadbeef\\1-ops_bash.txt. Use read with offset/limit, or grep this path.)';
-  assert.equal(
-    spillPathOf(real),
-    'C:\\Users\\x\\AppData\\Local\\Temp\\dsh-spill-abc\\session-deadbeef\\1-ops_bash.txt',
-  );
+  const path = join(tmpdir(), 'dsh-spill-abc', 'session-deadbeef', '1-ops_bash.txt');
+  const real = `(1234 bytes omitted. Full formatted result stored at: ${path}. Use read with offset/limit, or grep this path.)`;
+  assert.equal(spillPathOf(real), path);
   assert.equal(spillPathOf('(9 bytes omitted. Full formatted result stored at: <path>. Use read.)'), '');
   assert.equal(spillPathOf('nothing here'), '');
 });
 
 test('spillPathOf: 空格路径、.txt.bak、.TXT、目录名含 .txt 都完整取出', () => {
-  const cases = [
-    [
-      String.raw`(1 bytes omitted. Full formatted result stored at: C:\Users\A B\AppData\Local\Temp\dsh-spill-x\abc-read.txt. Use read.)`,
-      String.raw`C:\Users\A B\AppData\Local\Temp\dsh-spill-x\abc-read.txt`,
-    ],
-    [
-      String.raw`(1 bytes omitted. Full formatted result stored at: C:\Temp\x\a.txt.bak. Use read.)`,
-      String.raw`C:\Temp\x\a.txt.bak`,
-    ],
-    [
-      String.raw`(1 bytes omitted. Full formatted result stored at: C:\Temp\x\abc-read.TXT. Use read.)`,
-      String.raw`C:\Temp\x\abc-read.TXT`,
-    ],
-    [
-      String.raw`(1 bytes omitted. Full formatted result stored at: C:\Temp\notes.txt.d\abc-read.txt. Use read.)`,
-      String.raw`C:\Temp\notes.txt.d\abc-read.txt`,
-    ],
+  const expected = [
+    join(tmpdir(), 'dsh-spill-x', 'A B', 'abc-read.txt'),
+    join(tmpdir(), 'dsh-spill-x', 'a.txt.bak'),
+    join(tmpdir(), 'dsh-spill-x', 'abc-read.TXT'),
+    join(tmpdir(), 'dsh-spill-x', 'notes.txt.d', 'abc-read.txt'),
   ];
-  for (const [input, expected] of cases) assert.equal(spillPathOf(input), expected);
+  for (const path of expected) {
+    const input = `(1 bytes omitted. Full formatted result stored at: ${path}. Use read.)`;
+    assert.equal(spillPathOf(input), path);
+  }
 });

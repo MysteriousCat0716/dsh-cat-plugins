@@ -487,6 +487,28 @@ test('retrieve: 弱匹配按稀有词选，不按新旧选', async () => {
   db.close();
 });
 
+test('retrieve: 单个常见词的重合不单独构成弱匹配', async () => {
+  const db = openStore(':memory:');
+  const insert = db.prepare(
+    `INSERT INTO memories (kind, text, summary, entities, anchors, why, tier, t)
+     VALUES ('fact', ?, ?, '[]', '[]', '规则提炼：fact', 'active', ?)`,
+  );
+  // cache 在 6 条里都出现，df 大、权重低；候选只共享这一个词。
+  for (let i = 0; i < 6; i += 1) {
+    insert.run(`cache 的第 ${i} 个说明。`, `cache 说明 ${i}`, 1000 + i);
+  }
+  insert.run('今天天气不错，出去走了一圈。', '散步', 800);
+  const hits = await retrieve(db, {
+    text: 'cache idempotent 现在哪个更要紧',
+    recent: [],
+    now: 5000,
+  });
+  // 没有稀有词，单窗口重合不够格——这层以前会把 6 条 cache 说明全捞回来。
+  assert.equal(hits.length, 0);
+  db.close();
+});
+
+
 test('retrieve: permanent 的记忆不被更近的条目挤掉', async () => {
   const db = openStore(':memory:');
   const insert = db.prepare(
@@ -598,3 +620,4 @@ test('retrieve: 上次真的用过的记忆，注入行带「上次用在」', a
   assert.ok(renderHint(hits).includes('上次用在'));
   db.close();
 });
+

@@ -6,8 +6,8 @@
  * 所以重复条目不会被插第二遍。默认 dry-run（事务里跑完回滚），确认条数后再落库。
  *
  * 用法：
- *   node tools/migrate-mnemon.mjs --dry     # 预览：inserted / merged 统计，不改库
- *   node tools/migrate-mnemon.mjs           # 真写
+ *   node tools/migrate-mnemon.mjs            # 预览：inserted / merged 统计，不改库
+ *   node tools/migrate-mnemon.mjs --write    # 真写
  */
 import { DatabaseSync } from 'node:sqlite';
 import { homedir } from 'node:os';
@@ -15,7 +15,9 @@ import { join } from 'node:path';
 import { openStore } from '../lib/db.js';
 import { insertMemory, anchorsOf, entitiesOf, retentionOf } from '../lib/extract.js';
 
-const DRY = process.argv.includes('--dry');
+// 默认必须是 dry-run：这个脚本会往 core.db 写几百条记忆，误跑一次的代价比多打一个
+// --write 大得多。
+const DRY = !process.argv.includes('--write');
 const MNEMON_ROOT = join(homedir(), '.mnemon', 'data');
 
 function summaryOf(text) {

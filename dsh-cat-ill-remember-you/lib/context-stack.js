@@ -496,8 +496,19 @@ export function backfillStack(db, { limit = STACK_PER_SESSION * 4 } = {}) {
        LIMIT ?`,
     )
     .all(limit);
-  for (const row of rows) pushStack(db, { sid: row.sid, seq: row.seq, t: row.t });
-  // 铺多取一些再按正常容量出栈，让更早的提前拿到摘要，不留一个超容量的表。
-  evictOverflow(db);
+  // 整批一个事务（savepoint，外层已有事务时也能安全嵌套）。中途失败就整批回滚，
+  // 栈保持空，下次打开还能重试；不包事务的话写了一半的行会让 stackSize > 0，
+  // 下次直接 return 0，半满的栈永远补不回来。
+  db.exec('SAVEPOINT backfill_stack');
+  try {
+    for (const row of rows) pushStack(db, { sid: row.sid, seq: row.seq, t: row.t });
+    // 铺多取一些再按正常容量出栈，让更早的提前拿到摘要，不留一个超容量的表。
+    evictOverflow(db);
+    db.exec('RELEASE backfill_stack');
+  } catch (error) {
+    db.exec('ROLLBACK TO backfill_stack');
+    db.exec('RELEASE backfill_stack');
+    throw error;
+  }
   return rows.length;
 }
