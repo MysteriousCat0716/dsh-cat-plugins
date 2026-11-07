@@ -48,26 +48,32 @@ function head(text, n) {
  * @param {Array<{id:number, sid:string, seq:number, role:string, text:string, t:number}>} turns
  */
 export function groupTurns(turns) {
-  const blocks = [];
-  let current = null;
+  // 一张 append-only 表里多个会话交错写。必须先按 sid 拆开再组问答：
+  // 主会话 user → 子会话 user → 主会话 assistant 这种交错，如果遇到 sid
+  // 变化就截断，主会话的 assistant 会掉成孤立块，问答对不上。
+  const bySid = new Map();
   for (const turn of turns) {
-    // Sessions interleave in one append-only table; never merge two sids into
-    // one question/answer block.
-    if (current && current.turns[0].sid !== turn.sid) {
-      blocks.push(current);
-      current = null;
-    }
-    if (turn.role === 'user') {
-      if (current) blocks.push(current);
-      current = { turns: [turn] };
-    } else if (current) {
-      current.turns.push(turn);
-    } else {
-      // assistant 开头（会话中段接入）：单独成块，不丢
-      current = { turns: [turn] };
-    }
+    const list = bySid.get(turn.sid);
+    if (list) list.push(turn);
+    else bySid.set(turn.sid, [turn]);
   }
-  if (current) blocks.push(current);
+
+  const blocks = [];
+  for (const list of bySid.values()) {
+    let current = null;
+    for (const turn of list) {
+      if (turn.role === 'user') {
+        if (current) blocks.push(current);
+        current = { turns: [turn] };
+      } else if (current) {
+        current.turns.push(turn);
+      } else {
+        // assistant 开头（会话中段接入）：单独成块，不丢
+        current = { turns: [turn] };
+      }
+    }
+    if (current) blocks.push(current);
+  }
   return blocks;
 }
 

@@ -79,6 +79,15 @@ function recentTexts(messages, limit = 6) {
 }
 
 // 日志路径每次现算：测试和插件自检要能指到临时目录，不能写进真实用户目录。
+// 宿主的 session.surface.nodes 是 seq 数字数组；老的会话对象里是 {seq}。
+// 两处「当前窗口最近 6 条」共用它，免得一处按数字读、一处按对象读。
+function recentSurfaceSeqs(session, limit = 6) {
+  return (session?.surface?.nodes ?? [])
+    .map((node) => Number(node !== null && typeof node === 'object' ? node.seq : node))
+    .filter((seq) => Number.isFinite(seq) && seq > 0)
+    .slice(-limit);
+}
+
 function logFile() {
   return process.env.DSH_MEMORY_CORE_LOG || path.join(os.homedir(), '.dsh', 'cache', 'ill-remember-you.log');
 }
@@ -527,10 +536,7 @@ export function apply(ctx) {
             const parts = [];
             const stackOn = envOn('DSH_MEMORY_CORE_STACK', true);
             try {
-              const surfaceSeqs = (session?.surface?.nodes ?? [])
-                .map((node) => Number(node?.seq))
-                .filter((seq) => Number.isFinite(seq) && seq > 0)
-                .slice(-6);
+              const surfaceSeqs = recentSurfaceSeqs(session);
               if (stackOn) {
                 const stacked = renderStack(db, {
                   sid,
@@ -736,10 +742,7 @@ export function apply(ctx) {
         // 当前窗口里已经有的行不要在本会话段重复一遍：用户刚发的那条在
         // pre-step 之前就入栈了，不排掉会在同一个 prompt 里出现两次。
         // 用 seq 而不是轮次号——seq 是宿主真相，跨重启、恢复会话都成立。
-        const surfaceSeqs = (session?.surface?.nodes ?? [])
-          .map((node) => Number(node?.seq))
-          .filter((seq) => Number.isFinite(seq) && seq > 0)
-          .slice(-6);
+        const surfaceSeqs = recentSurfaceSeqs(session);
         const stacked = renderStack(db, {
           sid,
           excludeSeqs: surfaceSeqs,

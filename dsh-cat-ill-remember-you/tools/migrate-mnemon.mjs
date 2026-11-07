@@ -3,16 +3,18 @@
  * 一次性迁移：mnemon 的 an / default 两个空间 → 插件 core.db。
  *
  * 只做「搬运 + 去重」：insertMemory 里已有的 sameTopic 合并与改口链照常生效，
- * 所以重复条目不会被插第二遍。默认 dry-run（事务里跑完回滚），确认条数后再落库。
+ * 所以重复条目不会被插第二遍。默认 dry-run：VACUUM INTO 一份临时副本，在副本上
+ * 跑完整流程，原库不动。确认条数后再加 --write 落库。
  *
  * 用法：
  *   node tools/migrate-mnemon.mjs            # 预览：inserted / merged 统计，不改库
  *   node tools/migrate-mnemon.mjs --write    # 真写
  */
 import { DatabaseSync } from 'node:sqlite';
-import { homedir } from 'node:os';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { openStore } from '../lib/db.js';
+import { DEFAULT_DB_FILE, openStore } from '../lib/db.js';
 import { insertMemory, anchorsOf, entitiesOf, retentionOf } from '../lib/extract.js';
 
 // 默认必须是 dry-run：这个脚本会往 core.db 写几百条记忆，误跑一次的代价比多打一个
@@ -43,7 +45,25 @@ for (const space of ['an', 'default']) {
   src.close();
 }
 
-const db = openStore();
+// dry-run 不能只靠事务回滚：openStore() 自己就会建表、补列、建索引，这些
+// DDL 在 BEGIN 之前已经写进库了。所以预览走副本：VACUUM INTO 一份临时库，
+// 在副本上跑完整流程，原库一个字节都不动。
+let scratchDir = '';
+let db;
+if (DRY) {
+  if (!existsSync(DEFAULT_DB_FILE)) {
+    console.error(`没有可预览的库：${DEFAULT_DB_FILE}`);
+    process.exit(1);
+  }
+  scratchDir = mkdtempSync(join(tmpdir(), 'dsh-migrate-dry-'));
+  const copy = join(scratchDir, 'core.db');
+  const live = new DatabaseSync(DEFAULT_DB_FILE, { readOnly: true });
+  live.exec(`VACUUM INTO '${copy.replace(/'/g, "''")}'`);
+  live.close();
+  db = openStore(copy);
+} else {
+  db = openStore();
+}
 if (DRY) db.exec('BEGIN');
 const stats = { total: rows.length, inserted: 0, merged: 0, skipped: 0, chars: 0 };
 try {
@@ -86,7 +106,10 @@ try {
   if (DRY) db.exec('ROLLBACK');
 } catch (error) {
   if (DRY) db.exec('ROLLBACK');
+  db.close();
+  if (scratchDir) rmSync(scratchDir, { recursive: true, force: true });
   throw error;
 }
 db.close();
+if (scratchDir) rmSync(scratchDir, { recursive: true, force: true });
 console.log(JSON.stringify({ ...stats, dry: DRY }, null, 2));

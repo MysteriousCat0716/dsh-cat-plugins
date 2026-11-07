@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { zstdDecompressSync } from 'node:zlib';
@@ -117,12 +117,24 @@ const SPILL_PATH = /Full formatted result stored at:\s*(.+?)\.?\s*Use read\b/i;
  */
 const SPILL_ROOT_PATTERN = /^dsh-spill-[A-Za-z0-9]+$/;
 
-export function isSpillPath(path) {
-  if (typeof path !== 'string' || path.length === 0) return false;
+function insideSpillRoot(path) {
   const rel = relative(resolve(tmpdir()), resolve(path));
   if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return false;
   const first = rel.split(sep)[0] ?? '';
   return SPILL_ROOT_PATTERN.test(first);
+}
+
+export function isSpillPath(path) {
+  if (typeof path !== 'string' || path.length === 0) return false;
+  if (!insideSpillRoot(path)) return false;
+  try {
+    // 字面路径在 spill 根下，文件本身可能是软链、指到根外的敏感文件。
+    // 按真实位置再验一次；文件还没落盘时 realpath 抛错，交给调用方
+    // 正常走「不存在返回空串」。
+    return insideSpillRoot(realpathSync(path));
+  } catch {
+    return true;
+  }
 }
 
 export function spillPathOf(text) {

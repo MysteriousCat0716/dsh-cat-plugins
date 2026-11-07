@@ -40,6 +40,27 @@ test('groupTurns: two interleaved sessions never share a block', () => {
   }
 });
 
+test('groupTurns: 三个会话交错时，每个会话的问答仍然完整', () => {
+  const blocks = groupTurns([
+    turn({ id: 1, sid: 'main', seq: 1, role: 'user', text: '主问' }),
+    turn({ id: 2, sid: 'sub', seq: 1, role: 'user', text: '子问' }),
+    turn({ id: 3, sid: 'other', seq: 1, role: 'user', text: '三问' }),
+    turn({ id: 4, sid: 'sub', seq: 2, role: 'assistant', text: '子答' }),
+    turn({ id: 5, sid: 'main', seq: 2, role: 'assistant', text: '主答' }),
+    turn({ id: 6, sid: 'other', seq: 2, role: 'assistant', text: '三答' }),
+  ]);
+  const bySid = new Map();
+  for (const block of blocks) {
+    assert.equal(new Set(block.turns.map((t) => t.sid)).size, 1);
+    bySid.set(block.turns[0].sid, block);
+  }
+  // 交错写进同一张表也要按会话各自配对，而不是 assistant 掉成孤立块。
+  const expected = { main: [1, 5], sub: [2, 4], other: [3, 6] };
+  for (const [sid, ids] of Object.entries(expected)) {
+    assert.deepEqual(bySid.get(sid).turns.map((t) => t.id), ids);
+  }
+});
+
 test('candidateOf: the last assistant step carries the conclusion', () => {
   const block = {
     turns: [

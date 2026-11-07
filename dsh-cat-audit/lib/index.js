@@ -360,11 +360,14 @@ function splitLocation(location) {
 
 // 路径后缀匹配：绝对路径与相对路径只要从末尾往前完全一致就算同一个文件。
 // 只共享 basename（1 段）时不合并——六个插件里都有 lib/index.js，会误合。
-function sameFile(a, b) {
-  const pa = a.split('/').filter(Boolean);
-  const pb = b.split('/').filter(Boolean);
+export function sameFile(a, b) {
+  const pa = String(a).split('/').filter(Boolean);
+  const pb = String(b).split('/').filter(Boolean);
   const n = Math.min(pa.length, pb.length);
   if (n < 2) return false;
+  // 深度不同时只靠后缀对上不足以下结论：`lib/index.js` 会同时匹配
+  // dsh-cat-audit 和 dsh-cat-eye 各自的 lib/index.js。短的那边至少 3 段才继续比。
+  if (pa.length !== pb.length && n < 3) return false;
   for (let i = 1; i <= n; i += 1) {
     if (pa[pa.length - i] !== pb[pb.length - i]) return false;
   }
