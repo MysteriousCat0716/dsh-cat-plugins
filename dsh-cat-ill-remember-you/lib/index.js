@@ -247,9 +247,13 @@ export function apply(ctx) {
   if (!currentStore()) log('store unavailable at load; will retry lazily');
   // 预热 embedding 模型：第一次 recall 不该在对话路径上等冷启动。
   // 后台跑，失败也不拦插件加载——Ollama 不在就退回词面召回。
-  void warmVector().then((ok) => {
-    if (ok) log('embed warm-up ok');
-  });
+  // 默认关：向量层不开时连这一下都不该发，否则「不依赖 Ollama」就只是
+  // 召回路径不依赖，启动时照样去敲一次门。
+  if (vectorsEnabled()) {
+    void warmVector().then((ok) => {
+      if (ok) log('embed warm-up ok');
+    });
+  }
   // 记忆块走宿主的动态上下文通道：pre-step 只把文本放进 hintBySid，
   // provider 在 assemble 和 step() 的 refreshContext 时被求值。
   // 不能塞 decision.messages——宿主会把每条非 runtime-context 的消息 append
