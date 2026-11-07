@@ -99,7 +99,8 @@ CREATE TABLE IF NOT EXISTS recall_trace (
   t       INTEGER NOT NULL,
   picked  INTEGER NOT NULL DEFAULT 0,
   dropped INTEGER NOT NULL DEFAULT 0,
-  detail  TEXT    NOT NULL DEFAULT '[]'
+  detail  TEXT    NOT NULL DEFAULT '[]',
+  picked_detail TEXT NOT NULL DEFAULT '[]'
 );
 
 CREATE TABLE IF NOT EXISTS shadow_log (
@@ -250,6 +251,8 @@ export function openStore(file = DEFAULT_DB_FILE) {
     ensureColumn(db, 'memories', 'mentions', 'INTEGER NOT NULL DEFAULT 1');
     ensureColumn(db, 'turns', 'scanned_at', 'INTEGER NOT NULL DEFAULT 0');
     ensureColumn(db, 'turns', 'cwd', "TEXT NOT NULL DEFAULT ''");
+    // 只记落选的账本量不出「每层各贡献了几条」：picked 的 section 也落一行。
+    ensureColumn(db, 'recall_trace', 'picked_detail', "TEXT NOT NULL DEFAULT '[]'");
     ensureColumn(db, 'shadow_v2', 'applied', 'INTEGER NOT NULL DEFAULT 0');
     ensureColumn(db, 'shadow_v2', 'cwd', "TEXT NOT NULL DEFAULT ''");
     // 这两个索引依赖上面补的列（turns.cwd / shadow_v2.applied）。旧库里列还不

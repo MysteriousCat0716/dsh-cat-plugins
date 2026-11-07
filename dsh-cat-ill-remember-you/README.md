@@ -14,6 +14,7 @@
   - 同分区按 `anchors × 2 + entities` 打分，不再按时间取最新；L2 候选池 24 条。
   - 「这一轮已经给过」按 `recall_log.memory_id` 抑制，不按词面重合——否则越在聊越不召回。
   - L3 只要句子带指代就回看最近原文；只有指代、抽不出名词时也翻（「你还记得上次那件事吗」）。
+  - 弱匹配 + 别名：`weakTerms` 切出的词会按 `lib/aliases.js` 的分组扩展（「考研」也去查「上岸」），扩展词按 0.7 折算、不能单独凑够两个窗口的门槛。内置几组常用同义词，用户可放 `~/.dsh/memory/aliases.json`（`{ "组名": ["词1","词2"] }`，同名组整组覆盖）。路径可用 `DSH_MEMORY_CORE_ALIASES` 指到别处。
   - 向量（默认关）：`lib/embed.js` 调本机 Ollama `/api/embed`（默认 `qwen3-embedding:0.6b`，1024 维），回填在 `embeddings` 表；锚点/实体没补满两条就跑一次，余弦 ≥0.55 补一条，连不上 60 秒冷却。**要 `DSH_MEMORY_CORE_VECTOR=on` 才开**——这一层需要 Ollama 常驻，收益上限是补一条候选，纯 SQLite 的锚点/实体/弱匹配三层不需要它。
   - 注入走宿主 `systemPrompt.context` 动态上下文，不塞 `decision.messages`——后者会被宿主 append 成 `user/message`，显示成用户气泡。
 - **M3 影子账本**：黑名单外每轮算「如果替换会删掉什么、补上什么」，落 `shadow_v2`；黑名单里的会话完全不记账（这些会话不会真替换，记账只会随宿主压缩无限涨）。
@@ -47,6 +48,10 @@
 
 依赖与 `dsh.profile.bundles` 里加 `dsh-cat-ill-remember-you`（link 到本目录），`pnpm install`，重启 dsh。侧栏出现「记忆」页签；面板里的「只推演」按钮会生成一份「若现在开替换，这一轮模型会收到的完整上下文」，不写历史、不记账。
 
+## 评测
+
+`node tools/eval-recall.mjs [--limit 200] [--verbose]`：拿 `recall_log` 里 `used=1` 的真实轮次回放，量「曾经找回来的东西现在还找不找得到」。这是回归基线，不是绝对正确率——账本只记了当时注入了什么，没记当时漏了什么。
+
 ## 跑测试
 
 ```bash
@@ -66,6 +71,7 @@ for f in test/*.test.js; do node "$f"; done
 | `DSH_MEMORY_CORE_OLLAMA` | `http://127.0.0.1:11434` | Ollama 地址 |
 | `DSH_MEMORY_CORE_EMBED_BATCH` | `16` | 每批补多少条向量 |
 | `DSH_MEMORY_CORE_VECTOR` | `off` | 设 `on` 才用向量召回（需要本机 Ollama） |
+| `DSH_MEMORY_CORE_ALIASES` | `~/.dsh/memory/aliases.json` | 别名表文件位置 |
 | `DSH_MEMORY_CORE_STACK` | `on` | 短期栈（A1 接续层）开关 |
 | `DSH_MEMORY_CORE_PEOPLE` | `on` | 人物层（A3）开关 |
 | `DSH_MEMORY_CORE_ENRICH` | `on` | 后台整理（提炼 / 向量 / 遗忘）开关；向量部分另受 `DSH_MEMORY_CORE_VECTOR` 控制 |

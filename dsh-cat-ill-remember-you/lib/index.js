@@ -863,9 +863,10 @@ export function apply(ctx) {
         // 「这轮为什么空」正是最需要看见的那一半。
         try {
           const detail = Array.isArray(hits.trace) ? hits.trace : [];
+          const pickedDetail = Array.isArray(hits.pickedDetail) ? hits.pickedDetail : [];
           const personaCount = Number(hits.personaCount ?? 0);
           db.prepare(
-            'INSERT INTO recall_trace (sid, turn, t, picked, dropped, detail) VALUES (?, ?, ?, ?, ?, ?)',
+            'INSERT INTO recall_trace (sid, turn, t, picked, dropped, detail, picked_detail) VALUES (?, ?, ?, ?, ?, ?, ?)',
           ).run(
             sid,
             turnNo,
@@ -873,6 +874,7 @@ export function apply(ctx) {
             Math.max(0, hits.length - personaCount),
             detail.length,
             JSON.stringify(detail),
+            JSON.stringify(pickedDetail),
           );
         } catch (error) {
           log(`recall trace failed: ${error?.message ?? error}`);

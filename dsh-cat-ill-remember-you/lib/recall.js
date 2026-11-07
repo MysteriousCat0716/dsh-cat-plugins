@@ -19,6 +19,7 @@ import {
   vectorsEnabled,
 } from './embed.js';
 import { reviveOnRecall } from './forget.js';
+import { expandTerms } from './aliases.js';
 
 const REFERRAL = /(之前|上次|上回|那个|这个|这句|这份|这条|这段|那件|那事|还说过|刚才|前面|说过|提过|记得|上一条|刚刚)/;
 const MAX_HITS = 2;
@@ -155,7 +156,7 @@ function countOccurrences(text, term) {
  * 第三条「命中在 user 问句里 > assistant 长解释里」需要 role，memories
  * 没有这个列，先不做；summary 里已经带着「问：/答：」的形态，后面再说。
  */
-function weakScoreOf(db, terms, text, weightOf, countStmt) {
+function weakScoreOf(db, terms, text, weightOf, countStmt, discount) {
   const body = String(text ?? '');
   let score = 0;
   let hits = 0;
@@ -163,15 +164,18 @@ function weakScoreOf(db, terms, text, weightOf, countStmt) {
   for (const term of terms) {
     const tf = countOccurrences(body, term);
     if (tf === 0) continue;
-    hits += 1;
+    // 别名命中算「半个窗口」：它是同一件东西的另一种叫法，证据比用户原话里
+    // 直接出现的词弱一档，不该单独凑够两个窗口的门槛。
+    const d = discount?.get(term) ?? 1;
+    hits += d;
     let weight = weightOf.get(term);
     if (weight === undefined) {
       const df = Number(countStmt.get(`%${escapeLike(term)}%`)?.c) || 0;
       weight = 1 / Math.log(2 + df);
       weightOf.set(term, weight);
     }
-    score += Math.min(tf, 3) * weight;
-    maxWeight = Math.max(maxWeight, weight);
+    score += Math.min(tf, 3) * weight * d;
+    maxWeight = Math.max(maxWeight, weight * d);
   }
   // hits 与 maxWeight 一起交回去：单个窗口的重合大多是巧合（「压缩要」也能对上
   // 一篇讲 VS Code 的正文），要求至少两个不同窗口命中才认——除非命中的那个词
@@ -615,8 +619,10 @@ export async function retrieve(
   if (hits.length < MAX_HITS) {
     const terms = weakTerms(query.text);
     if (terms.length) {
-      const like = terms.map(() => `(text LIKE ? ESCAPE '\\')`).join(' OR ');
-      const values = terms.map((term) => `%${escapeLike(term)}%`);
+      // 别名扩展：把「考研」也拿去查「上岸」，同组词按 0.7 折。
+      const { all, discount } = expandTerms(terms);
+      const like = all.map(() => `(text LIKE ? ESCAPE '\\')`).join(' OR ');
+      const values = all.map((term) => `%${escapeLike(term)}%`);
       const rows = db
         .prepare(
           `SELECT id, kind, summary, text, entities, anchors, t, mentions, confidence, retention FROM memories
@@ -632,7 +638,7 @@ export async function retrieve(
       for (const row of rows) {
         const item = rowToItem(row, 'memory');
         if (seen.has(`memory:${item.id}`) || given.has(`memory:${item.id}`)) continue;
-        const { score, hits, maxWeight } = weakScoreOf(db, terms, row.text, weightOf, countStmt);
+        const { score, hits, maxWeight } = weakScoreOf(db, all, row.text, weightOf, countStmt, discount);
         // 单个词窗口的重合大多是巧合（「压缩要」也能撞上一篇讲 VS Code 的正文）。
         // 短句本身只有一两个窗口，不强求两个；有得挑时要求至少两个不同窗口，
         // 或者命中词本身就很稀有（df <= 2，权重 >= 0.7）。
@@ -784,6 +790,14 @@ export async function retrieve(
   }
   const result = [...persona, ...picked];
   result.trace = trace;
+  // 落选的账在 trace，入选的账在这里：没有这一半，就量不出「向量层 / 弱匹配
+  // 各救过几次」，也就没法拿数据判断某一层该不该留。
+  result.pickedDetail = picked.map((hit) => ({
+    id: hit.id,
+    source: hit.source ?? 'memory',
+    section: hit.section ?? '',
+    score: Math.round((hit.score ?? 0) * 1000) / 1000,
+  }));
   result.personaCount = persona.length;
   return result;
 }
