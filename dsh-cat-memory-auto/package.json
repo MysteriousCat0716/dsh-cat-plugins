@@ -1,0 +1,31 @@
+{
+  "name": "dsh-cat-memory-auto",
+  "version": "0.1.1",
+  "description": "Advance the session index while the conversation is idle: on turn/end + 5 minutes without activity, run the two-phase session-index build (text first, up to 20 embeddings), append one line per run to ~/.dsh/dsh-cat-memory-auto.log.",
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "memory",
+    "session-index"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

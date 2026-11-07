@@ -1,0 +1,33 @@
+{
+  "name": "dsh-cat-audit",
+  "version": "0.1.0",
+  "description": "Deterministic half of a code-audit pipeline: discover files, run optional semgrep, emit per-lens task sheets for subagents, then merge their findings by file:line (dedupe, weight cross-lens hits). Judgement-heavy review stays with the audit skill's lenses.",
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "tools/check.mjs",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "audit",
+    "semgrep",
+    "code-review"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "name": "dsh-cat-inject-guard",
+  "version": "0.1.1",
+  "description": "When external content (web pages, search results, transcripts) enters the context, scan it for instruction-injection patterns and append a warning to the same tool result. Read-only: never modifies the content, never executes it.",
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "security",
+    "prompt-injection"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

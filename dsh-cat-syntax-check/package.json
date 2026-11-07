@@ -1,0 +1,31 @@
+{
+  "name": "dsh-cat-syntax-check",
+  "version": "0.1.0",
+  "description": "After each edit/write of a .mjs or .cjs file, run node --check and append the compiler error to the same tool result, so a syntax mistake is visible in this step instead of costing another round-trip.",
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "syntax",
+    "verification"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

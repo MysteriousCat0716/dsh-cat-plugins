@@ -1,0 +1,3 @@
+- insert:
+    - id: cat-syntax-check
+      name: 'dsh-cat-syntax-check'

@@ -1,0 +1,5 @@
+# dsh-cat-think bundle patch: a pure client row (no host service),
+# all behaviour lives in lib/client.js.
+- insert:
+    - id: dsh-cat-think
+      name: dsh-cat-think

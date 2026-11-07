@@ -1,0 +1,35 @@
+{
+  "name": "dsh-cat-eye",
+  "version": "0.1.0",
+  "description": "Look at Bilibili through a tool: fetch a video, cut frames at scene changes, optionally transcribe the audio and pull hot comments, or grab a live room's current frames. Everything delegates to tools/look.py so the script and the tool never drift apart.",
+  "type": "module",
+  "main": "lib/index.mjs",
+  "files": [
+    "lib",
+    "tools/look.py",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "default": "./lib/index.mjs"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "compatibility": {
+      "dsh": ">=0.2.1-rc.1 <0.3.0-0"
+    }
+  },
+  "engines": {
+    "node": "^22.19 || >=24"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh": "*"
+  },
+  "license": "MIT"
+}

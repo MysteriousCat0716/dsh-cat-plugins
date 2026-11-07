@@ -1,0 +1,5 @@
+# dsh-cat-eye bundle patch: one host row that registers the look_bili tool.
+# All the work happens in tools/look.py; this row only wires the tool up.
+- insert:
+    - id: dsh-cat-eye
+      name: dsh-cat-eye

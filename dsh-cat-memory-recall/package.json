@@ -1,0 +1,31 @@
+{
+  "name": "dsh-cat-memory-recall",
+  "version": "0.1.3",
+  "description": "Recall two or three old session-index entries before the first model step of a turn: bigram prefilter, Ollama re-rank on the top 20, inject under an 800-token budget with sticky/cooldown. Marks the notice as memory, not instruction.",
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "memory",
+    "recall"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

@@ -1,0 +1,3 @@
+- insert:
+    - id: cat-audit
+      name: 'dsh-cat-audit'

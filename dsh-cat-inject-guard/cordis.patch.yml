@@ -1,0 +1,3 @@
+- insert:
+    - id: cat-inject-guard
+      name: 'dsh-cat-inject-guard'
