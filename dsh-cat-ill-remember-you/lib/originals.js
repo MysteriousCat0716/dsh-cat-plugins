@@ -1,4 +1,13 @@
-import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  fstatSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+} from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { zstdDecompressSync } from 'node:zlib';
@@ -129,11 +138,15 @@ export function isSpillPath(path) {
   if (!insideSpillRoot(path)) return false;
   try {
     // 字面路径在 spill 根下，文件本身可能是软链、指到根外的敏感文件。
-    // 按真实位置再验一次；文件还没落盘时 realpath 抛错，交给调用方
-    // 正常走「不存在返回空串」。
+    // 按真实位置再验一次。realpath 失败一律判不合法（fail-close）：文件不存在
+    // 本来也读不到，调用方会退回正文预览；EACCES / ELOOP 这类「校验做不完」
+    // 更不能当成通过——那等于「验不了就放行」。
     return insideSpillRoot(realpathSync(path));
-  } catch {
-    return true;
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      warn(`originals: realpath ${path} 失败（${error?.code ?? error}），按不可读处理`);
+    }
+    return false;
   }
 }
 
@@ -141,20 +154,33 @@ export function spillPathOf(text) {
   const value = String(text ?? '');
   const match = value.match(SPILL_PATH);
   const path = match ? match[1].trim() : '';
-  if (path.startsWith('<') || !isSpillPath(path)) return '';
+  // 这里只做字面校验，不碰文件系统：spill 文件可能已经被清理，但路径本身仍是
+  // 有用的指针（shadow-v2 会把所在目录告诉模型去 read）。真读的时候 readSpillText
+  // 会再过一次 isSpillPath。
+  if (path.startsWith('<') || !insideSpillRoot(path)) return '';
   return path;
 }
 
 /** 读 spill 文件；不存在、超上限、读失败都返回空串，让调用方退回正文预览。 */
 function readSpillText(path) {
   if (!isSpillPath(path)) return '';
+  let fd;
   try {
-    if (!existsSync(path)) return '';
-    const size = statSync(path).size;
-    if (size > MAX_ORIGINAL_FILE_BYTES) return '';
-    return readFileSync(path, 'utf8');
+    // 先用 fd 打开、再 fstat 这份 fd，少一次「按路径重新解析」——校验和读取之间
+    // 文件或软链被换掉的窗口只留下 open 前那一瞬。
+    fd = openSync(path, 'r');
+    if (fstatSync(fd).size > MAX_ORIGINAL_FILE_BYTES) return '';
+    return readFileSync(fd, 'utf8');
   } catch {
     return '';
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {
+        /* 关不上不影响已经读到的内容 */
+      }
+    }
   }
 }
 

@@ -10,6 +10,7 @@
  *   node tools/migrate-mnemon.mjs            # 预览：inserted / merged 统计，不改库
  *   node tools/migrate-mnemon.mjs --write    # 真写
  */
+import { pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -35,38 +36,79 @@ function timeOf(value) {
   return Number.isFinite(parsed) ? parsed : Date.now();
 }
 
-const rows = [];
-for (const space of ['an', 'default']) {
-  const src = new DatabaseSync(join(MNEMON_ROOT, space, 'mnemon.db'), { readOnly: true });
-  const list = src
-    .prepare('SELECT id, content, category, importance, entities, stored_at FROM insights WHERE deleted_at IS NULL')
-    .all();
-  for (const row of list) rows.push({ space, ...row });
-  src.close();
+/**
+ * dry-run 不能只靠事务回滚：openStore() 自己就会建表、补列、建索引，这些
+ * DDL 在 BEGIN 之前已经写进库了。所以预览走副本：VACUUM INTO 一份临时库，
+ * 在副本上跑完整流程，原库一个字节都不动。
+ *
+ * 初始化的每一步都可能抛（建目录 / 开源连接 / VACUUM / 开副本），所以整段
+ * 包在 try/finally 里：连接必关、临时目录必删；清理自己失败只记一条，不盖掉
+ * 主异常（否则真正的原因会被清理的次生错误顶掉）。
+ *
+ * @param {string} livePath 原库
+ * @param {(db: DatabaseSync) => any} run 在副本上跑的事
+ * @param {{mkdtemp?:Function, rm?:Function, log?:Function, openLive?:Function, openCopy?:Function}} [deps]
+ */
+export function withScratchCopy(livePath, run, deps = {}) {
+  const mkdtemp = deps.mkdtemp ?? mkdtempSync;
+  const rm = deps.rm ?? rmSync;
+  const log = deps.log ?? ((line) => console.error(line));
+  const openLive = deps.openLive ?? ((file) => new DatabaseSync(file, { readOnly: true }));
+  const openCopy = deps.openCopy ?? openStore;
+  let dir = '';
+  let live;
+  let db;
+  try {
+    dir = mkdtemp(join(tmpdir(), 'dsh-migrate-dry-'));
+    const copy = join(dir, 'core.db');
+    live = openLive(livePath);
+    live.exec(`VACUUM INTO '${copy.replace(/'/g, "''")}'`);
+    live.close();
+    live = undefined;
+    db = openCopy(copy);
+    return run(db);
+  } finally {
+    if (live !== undefined) {
+      try {
+        live.close();
+      } catch (error) {
+        log(`只读源连接关闭失败：${error?.message ?? error}`);
+      }
+    }
+    if (db !== undefined) {
+      try {
+        db.close();
+      } catch (error) {
+        log(`副本连接关闭失败：${error?.message ?? error}`);
+      }
+    }
+    if (dir) {
+      try {
+        rm(dir, { recursive: true, force: true });
+      } catch (error) {
+        log(`临时目录清理失败：${dir}（${error?.message ?? error}）`);
+      }
+    }
+  }
 }
 
-// dry-run 不能只靠事务回滚：openStore() 自己就会建表、补列、建索引，这些
-// DDL 在 BEGIN 之前已经写进库了。所以预览走副本：VACUUM INTO 一份临时库，
-// 在副本上跑完整流程，原库一个字节都不动。
-let scratchDir = '';
-let db;
-if (DRY) {
-  if (!existsSync(DEFAULT_DB_FILE)) {
-    console.error(`没有可预览的库：${DEFAULT_DB_FILE}`);
-    process.exit(1);
+function readSourceRows() {
+  const rows = [];
+  for (const space of ['an', 'default']) {
+    const src = new DatabaseSync(join(MNEMON_ROOT, space, 'mnemon.db'), { readOnly: true });
+    try {
+      const list = src
+        .prepare('SELECT id, content, category, importance, entities, stored_at FROM insights WHERE deleted_at IS NULL')
+        .all();
+      for (const row of list) rows.push({ space, ...row });
+    } finally {
+      src.close();
+    }
   }
-  scratchDir = mkdtempSync(join(tmpdir(), 'dsh-migrate-dry-'));
-  const copy = join(scratchDir, 'core.db');
-  const live = new DatabaseSync(DEFAULT_DB_FILE, { readOnly: true });
-  live.exec(`VACUUM INTO '${copy.replace(/'/g, "''")}'`);
-  live.close();
-  db = openStore(copy);
-} else {
-  db = openStore();
+  return rows;
 }
-if (DRY) db.exec('BEGIN');
-const stats = { total: rows.length, inserted: 0, merged: 0, skipped: 0, chars: 0 };
-try {
+
+function migrate(db, rows, stats) {
   for (const row of rows) {
     const text = String(row.content ?? '').trim();
     if (!text) {
@@ -103,13 +145,40 @@ try {
       stats.merged += 1;
     }
   }
-  if (DRY) db.exec('ROLLBACK');
-} catch (error) {
-  if (DRY) db.exec('ROLLBACK');
-  db.close();
-  if (scratchDir) rmSync(scratchDir, { recursive: true, force: true });
-  throw error;
 }
-db.close();
-if (scratchDir) rmSync(scratchDir, { recursive: true, force: true });
-console.log(JSON.stringify({ ...stats, dry: DRY }, null, 2));
+
+export function main() {
+  const rows = readSourceRows();
+  const stats = { total: rows.length, inserted: 0, merged: 0, skipped: 0, chars: 0 };
+  if (DRY) {
+    if (!existsSync(DEFAULT_DB_FILE)) {
+      console.error(`没有可预览的库：${DEFAULT_DB_FILE}`);
+      process.exitCode = 1;
+      return;
+    }
+    withScratchCopy(DEFAULT_DB_FILE, (db) => {
+      db.exec('BEGIN');
+      try {
+        migrate(db, rows, stats);
+      } finally {
+        // 副本马上就被删掉，回滚失败不影响原库；留着 try 是为了语句本身不抛出去。
+        try {
+          db.exec('ROLLBACK');
+        } catch {
+          /* 副本随目录一起删 */
+        }
+      }
+    });
+  } else {
+    const db = openStore();
+    try {
+      migrate(db, rows, stats);
+    } finally {
+      db.close();
+    }
+  }
+  console.log(JSON.stringify({ ...stats, dry: DRY }, null, 2));
+}
+
+const isMain = process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url;
+if (isMain) main();

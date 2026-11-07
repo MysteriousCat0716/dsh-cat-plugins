@@ -52,6 +52,8 @@ export function groupTurns(turns) {
   // 主会话 user → 子会话 user → 主会话 assistant 这种交错，如果遇到 sid
   // 变化就截断，主会话的 assistant 会掉成孤立块，问答对不上。
   const bySid = new Map();
+  const at = new Map();
+  turns.forEach((turn, index) => at.set(turn.id, index));
   for (const turn of turns) {
     const list = bySid.get(turn.sid);
     if (list) list.push(turn);
@@ -59,11 +61,12 @@ export function groupTurns(turns) {
   }
 
   const blocks = [];
+  const push = (block) => blocks.push({ ...block, at: at.get(block.turns[0].id) ?? 0 });
   for (const list of bySid.values()) {
     let current = null;
     for (const turn of list) {
       if (turn.role === 'user') {
-        if (current) blocks.push(current);
+        if (current) push(current);
         current = { turns: [turn] };
       } else if (current) {
         current.turns.push(turn);
@@ -72,8 +75,13 @@ export function groupTurns(turns) {
         current = { turns: [turn] };
       }
     }
-    if (current) blocks.push(current);
+    if (current) push(current);
   }
+  // 按 sid 分组会打乱全局顺序，这里按每块第一条 turn 在输入里的原始位置排回去。
+  // 顺序不是展示问题：refine() 按块顺序 insertMemory，而 sameTopicFor /
+  // supersedesFor 看的是「库里已经有什么」——两条同主题记忆谁并进谁，
+  // 取决于先插哪条。排回原始事件顺序，跨会话交错与单会话的落库结果一致。
+  blocks.sort((a, b) => a.at - b.at);
   return blocks;
 }
 

@@ -81,11 +81,37 @@ function recentTexts(messages, limit = 6) {
 // 日志路径每次现算：测试和插件自检要能指到临时目录，不能写进真实用户目录。
 // 宿主的 session.surface.nodes 是 seq 数字数组；老的会话对象里是 {seq}。
 // 两处「当前窗口最近 6 条」共用它，免得一处按数字读、一处按对象读。
-function recentSurfaceSeqs(session, limit = 6) {
-  return (session?.surface?.nodes ?? [])
-    .map((node) => Number(node !== null && typeof node === 'object' ? node.seq : node))
-    .filter((seq) => Number.isFinite(seq) && seq > 0)
-    .slice(-limit);
+//
+// 返回值三态：
+//   数组 = 认出来了（可能有 0 条，那是「窗口里确实没有行」）；
+//   null = 有节点但结构不认识——调用方必须跳过全局栈注入。
+// 不能把「认不出」静默过滤成空数组：excludeSeqs 空掉，当前窗口已有的行会被
+// 当成「没在窗口里」再注入一遍，同一个 prompt 里出现两份。
+export function recentSurfaceSeqs(session, limit = 6) {
+  const nodes = session?.surface?.nodes;
+  if (nodes === undefined || nodes === null) return [];
+  if (!Array.isArray(nodes)) {
+    log(`surface.nodes 不是数组（${typeof nodes}），本轮跳过栈注入`);
+    return null;
+  }
+  const out = [];
+  for (const node of nodes) {
+    const raw = node !== null && typeof node === 'object' ? node.seq : node;
+    const seq = typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : raw;
+    if (typeof seq === 'number' && Number.isFinite(seq)) {
+      if (seq > 0) out.push(seq);
+      continue;
+    }
+    let shown;
+    try {
+      shown = JSON.stringify(node) ?? String(node);
+    } catch {
+      shown = String(node);
+    }
+    log(`surface 节点结构未知（${shown.slice(0, 80)}），本轮跳过栈注入`);
+    return null;
+  }
+  return out.slice(-limit);
 }
 
 function logFile() {
@@ -537,7 +563,9 @@ export function apply(ctx) {
             const stackOn = envOn('DSH_MEMORY_CORE_STACK', true);
             try {
               const surfaceSeqs = recentSurfaceSeqs(session);
-              if (stackOn) {
+              // null = 序号认不出来，recentSurfaceSeqs 已经记过日志；跳过注入，
+              // 别拿空数组当「窗口里没有行」。
+              if (stackOn && surfaceSeqs !== null) {
                 const stacked = renderStack(db, {
                   sid,
                   excludeSeqs: surfaceSeqs,
@@ -743,20 +771,24 @@ export function apply(ctx) {
         // pre-step 之前就入栈了，不排掉会在同一个 prompt 里出现两次。
         // 用 seq 而不是轮次号——seq 是宿主真相，跨重启、恢复会话都成立。
         const surfaceSeqs = recentSurfaceSeqs(session);
-        const stacked = renderStack(db, {
-          sid,
-          excludeSeqs: surfaceSeqs,
-          limit: readStackLimit(),
-          excludeKeys: readStackExclude(),
-        });
-        if (stacked) {
-          const mode = replaceMode(sid);
-          const body =
-            mode === 'off'
-              ? `${stacked}\n（本会话在替换黑名单里：以上栈只用于预览，不改写本会话历史。）`
-              : stacked;
-          hintParts.push(body);
-          log(`stack chars=${stacked.length} mode=${mode}`);
+        if (surfaceSeqs === null) {
+          log('stack skipped: surface 序号不可识别，避免重复注入');
+        } else {
+          const stacked = renderStack(db, {
+            sid,
+            excludeSeqs: surfaceSeqs,
+            limit: readStackLimit(),
+            excludeKeys: readStackExclude(),
+          });
+          if (stacked) {
+            const mode = replaceMode(sid);
+            const body =
+              mode === 'off'
+                ? `${stacked}\n（本会话在替换黑名单里：以上栈只用于预览，不改写本会话历史。）`
+                : stacked;
+            hintParts.push(body);
+            log(`stack chars=${stacked.length} mode=${mode}`);
+          }
         }
       } catch (error) {
         log(`stack failed: ${error?.message ?? error}`);
