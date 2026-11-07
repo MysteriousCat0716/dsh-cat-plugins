@@ -23,13 +23,19 @@ import path from 'node:path';
 
 export const name = 'dsh-cat-syntax-check';
 
+// 环境变量是自由文本：`DSH_SYNTAX_CHECK_TIMEOUT=abc` 或 `-1` 不能被当成超时用。
+function positiveInt(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : fallback;
+}
+
 const CFG = {
   enabled: process.env.DSH_SYNTAX_CHECK !== 'off',
   exts:
     process.env.DSH_SYNTAX_CHECK_JS === 'on'
       ? ['.mjs', '.cjs', '.js']
       : ['.mjs', '.cjs'],
-  timeoutMs: Number(process.env.DSH_SYNTAX_CHECK_TIMEOUT ?? 8000),
+  timeoutMs: positiveInt(process.env.DSH_SYNTAX_CHECK_TIMEOUT, 8000),
   maxErrorChars: 1200,
 };
 

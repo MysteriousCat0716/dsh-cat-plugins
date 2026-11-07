@@ -34,6 +34,8 @@ from pathlib import Path
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 ROOT = Path(__file__).resolve().parent
+MAX_DOWNLOAD_MB = 200
+MAX_DOWNLOAD_BYTES = MAX_DOWNLOAD_MB * 1024 * 1024
 
 
 def http_json(url):
@@ -45,7 +47,21 @@ def http_json(url):
 def http_bytes(url):
     req = urllib.request.Request(url, headers={"User-Agent": UA, "Referer": "https://www.bilibili.com"})
     with urllib.request.urlopen(req, timeout=120) as r:
-        return r.read()
+        # 不设上限时一个异常大的 360P 源（或错误的直链）会把内存和磁盘一起吃掉。
+        total = int(r.headers.get("Content-Length") or 0)
+        if total > MAX_DOWNLOAD_BYTES:
+            sys.exit(f"下载超过 {MAX_DOWNLOAD_MB}MB 上限（Content-Length={total}），放弃")
+        chunks = []
+        got = 0
+        while True:
+            chunk = r.read(1 << 20)
+            if not chunk:
+                break
+            got += len(chunk)
+            if got > MAX_DOWNLOAD_BYTES:
+                sys.exit(f"下载超过 {MAX_DOWNLOAD_MB}MB 上限，放弃")
+            chunks.append(chunk)
+        return b"".join(chunks)
 
 
 def pick_bvid(text):

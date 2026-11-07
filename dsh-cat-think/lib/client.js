@@ -242,6 +242,10 @@ window.__ModuleLoader__.load({
 				observer = null;
 			}
 			document.removeEventListener("click", onDocumentClick, true);
+			if (timer !== null) {
+				window.clearTimeout(timer);
+				timer = null;
+			}
 			if (clickTimer !== null) {
 				window.clearTimeout(clickTimer);
 				clickTimer = null;

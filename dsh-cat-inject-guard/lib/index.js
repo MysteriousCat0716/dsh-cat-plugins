@@ -15,10 +15,17 @@ import path from 'node:path';
 export const name = 'dsh-cat-inject-guard';
 
 const LOG = path.join(os.homedir(), '.dsh', 'cache', 'inject-guard.jsonl');
+
+// 环境变量是自由文本：`DSH_INJECT_GUARD_MAX=abc` 或 `-3` 不能被当成数字用。
+function positiveInt(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : fallback;
+}
+
 const CFG = {
   enabled: process.env.DSH_INJECT_GUARD !== 'off',
   // 单条结果最多报告多少处命中，防止一页注入刷屏
-  maxReport: Number(process.env.DSH_INJECT_GUARD_MAX ?? 6),
+  maxReport: positiveInt(process.env.DSH_INJECT_GUARD_MAX, 6),
 };
 
 // 哪些工具的结果算「外部内容」：网页、搜索、别人发的消息、视频字幕。

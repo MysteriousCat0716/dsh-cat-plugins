@@ -384,7 +384,7 @@ function sameSpot(a, b) {
   return Math.abs(a.line - b.line) <= MERGE_LINE_TOLERANCE;
 }
 
-function mergeFindings(entries) {
+export function mergeFindings(entries) {
   const groups = [];
   for (const entry of entries) {
     const spot = splitLocation(entry.location);
@@ -413,14 +413,16 @@ function mergeFindings(entries) {
       .map((e) => e.severity)
       .sort((a, b) => (SEVERITY_ORDER[a] ?? 9) - (SEVERITY_ORDER[b] ?? 9))[0];
     const top = Math.max(...list.map((e) => e.confidence));
-    const confidence = Math.min(95, top + 8 * (list.length - 1));
+    const lenses = [...new Set(list.map((e) => e.source))];
+    // 只有不同透镜互相印证才加分：同一透镜在同一处报两条，是重复不是证据。
+    const confidence = Math.min(95, top + 8 * (lenses.length - 1));
     // 组里可能同时有绝对路径和相对路径，展示取最短的那个（通常是子代理写的相对路径）
     const shortest = list
       .map((e) => splitLocation(e.location).file)
       .filter(Boolean)
       .sort((a, b) => a.length - b.length)[0];
     const key = shortest ? `${shortest}:${g.line}` : `未定位：${g.title}`;
-    merged.push({ key, severity, confidence, lenses: [...new Set(list.map((e) => e.source))], entries: list });
+    merged.push({ key, severity, confidence, lenses, entries: list });
   }
   merged.sort((a, b) => (SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]) || (b.confidence - a.confidence));
   return merged;
