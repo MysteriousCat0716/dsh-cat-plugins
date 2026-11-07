@@ -26,3 +26,6 @@ Thumbs.db
 
 # 临时脚本（跑完就删，不入库）
 _tmp/
+
+# codegraph 本地索引（2026-11-07）
+.codegraph/
