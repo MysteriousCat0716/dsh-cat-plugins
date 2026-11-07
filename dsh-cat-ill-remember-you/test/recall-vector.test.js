@@ -48,6 +48,7 @@ test('retrieve: 锚点命中一条后，向量仍能补一条没有共享词的�
       text: 'lib/recall.js 这个文件现在怎么改',
       recent: [],
       now: 2000,
+      vector: true,
     });
 
     assert.ok(

@@ -14,7 +14,7 @@
   - 同分区按 `anchors × 2 + entities` 打分，不再按时间取最新；L2 候选池 24 条。
   - 「这一轮已经给过」按 `recall_log.memory_id` 抑制，不按词面重合——否则越在聊越不召回。
   - L3 只要句子带指代就回看最近原文；只有指代、抽不出名词时也翻（「你还记得上次那件事吗」）。
-  - 向量：`lib/embed.js` 直接调本机 Ollama `/api/embed`（默认 `qwen3-embedding:0.6b`，1024 维），回填在 `embeddings` 表；锚点/实体没补满两条就跑一次，余弦 ≥0.55 补一条，连不上 60 秒冷却。
+  - 向量（默认关）：`lib/embed.js` 调本机 Ollama `/api/embed`（默认 `qwen3-embedding:0.6b`，1024 维），回填在 `embeddings` 表；锚点/实体没补满两条就跑一次，余弦 ≥0.55 补一条，连不上 60 秒冷却。**要 `DSH_MEMORY_CORE_VECTOR=on` 才开**——这一层需要 Ollama 常驻，收益上限是补一条候选，纯 SQLite 的锚点/实体/弱匹配三层不需要它。
   - 注入走宿主 `systemPrompt.context` 动态上下文，不塞 `decision.messages`——后者会被宿主 append 成 `user/message`，显示成用户气泡。
 - **M3 影子账本**：黑名单外每轮算「如果替换会删掉什么、补上什么」，落 `shadow_v2`；黑名单里的会话完全不记账（这些会话不会真替换，记账只会随宿主压缩无限涨）。
 - **M4 遗忘**：每日一次，按取回/验证时间降 tier，只标不删，落 `forget_log`。保留期分三档：`permanent` 永不降级（偏好）、`ephemeral` 7 天没碰沉 dormant（情绪）、`auto` 走默认曲线（30/90 天）。
@@ -65,10 +65,10 @@ for f in test/*.test.js; do node "$f"; done
 | `DSH_MEMORY_CORE_EMBED_MODEL` | `qwen3-embedding:0.6b` | 向量模型 |
 | `DSH_MEMORY_CORE_OLLAMA` | `http://127.0.0.1:11434` | Ollama 地址 |
 | `DSH_MEMORY_CORE_EMBED_BATCH` | `16` | 每批补多少条向量 |
-| `DSH_MEMORY_CORE_VECTOR` | `on` | 设 `off` 关掉向量召回（测试用） |
+| `DSH_MEMORY_CORE_VECTOR` | `off` | 设 `on` 才用向量召回（需要本机 Ollama） |
 | `DSH_MEMORY_CORE_STACK` | `on` | 短期栈（A1 接续层）开关 |
 | `DSH_MEMORY_CORE_PEOPLE` | `on` | 人物层（A3）开关 |
-| `DSH_MEMORY_CORE_ENRICH` | `on` | 后台整理（提炼 / 向量 / 遗忘）开关 |
+| `DSH_MEMORY_CORE_ENRICH` | `on` | 后台整理（提炼 / 向量 / 遗忘）开关；向量部分另受 `DSH_MEMORY_CORE_VECTOR` 控制 |
 | `DSH_MEMORY_CORE_PERSONA` | `off` | 设 `on` 才注入常驻层（避免和仍在跑的 mnemon 双份） |
 | `DSH_MEMORY_CORE_PERSONA_USER` | `4096` | 常驻层 user 区字数上限 |
 | `DSH_MEMORY_CORE_PERSONA_MEMORY` | `8192` | 常驻层 memory 区字数上限 |

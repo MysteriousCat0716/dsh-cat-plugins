@@ -25,7 +25,7 @@ import { renderPeople } from './people.js';
 import { setOriginalsLogger } from './originals.js';
 import { backfillTurnCwd } from './backfill.js';
 import { forgetSweep } from './forget.js';
-import { embedPending, warmVector } from './embed.js';
+import { embedPending, vectorsEnabled, warmVector } from './embed.js';
 
 /** 版本号只从 package.json 取：面板、诊断、README 共用一处，别在手写字符串里维护。 */
 const PKG_VERSION = (() => {
@@ -990,8 +990,9 @@ export function apply(ctx) {
     } finally {
       refining = false;
     }
-    // 向量索引：只补缺的几条；Ollama 不可用时退避 10 分钟再试，不阻塞下一轮。
-    if (!embedding && Date.now() >= embedRetryAt) {
+    // 向量索引：默认关（DSH_MEMORY_CORE_VECTOR=on 才跑）。开了才补缺的几条；
+    // Ollama 不可用时退避 10 分钟再试，不阻塞下一轮。
+    if (vectorsEnabled() && !embedding && Date.now() >= embedRetryAt) {
       embedding = true;
       embedPending(db)
         .then((result) => {

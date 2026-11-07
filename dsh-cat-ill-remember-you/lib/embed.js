@@ -18,6 +18,18 @@ export const DEFAULT_ENDPOINT = 'http://127.0.0.1:11434';
 export const DEFAULT_BATCH = 16;
 export const DEFAULT_TIMEOUT_MS = 30_000;
 
+/**
+ * 向量层要不要用。默认关，必须显式 `DSH_MEMORY_CORE_VECTOR=on` 才开。
+ *
+ * 为什么默认关：这一层需要本机常驻 Ollama，而 Ollama 不在时每轮都要探一次
+ * 端口、失败后冷却 60 秒，后台还要每 10 分钟重试回填。它的收益上限是补
+ * 一条候选（见 recall.js 的 0.55 门槛），代价是一个常驻进程——不值得让
+ * 所有人默认背上。纯 SQLite 的锚点/实体/弱匹配三层不依赖任何外部进程。
+ */
+export function vectorsEnabled() {
+  return process.env.DSH_MEMORY_CORE_VECTOR === 'on';
+}
+
 function positive(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? number : fallback;

@@ -16,6 +16,7 @@ import {
   embedText,
   endpointReady,
   nearestByVector,
+  vectorsEnabled,
 } from './embed.js';
 import { reviveOnRecall } from './forget.js';
 
@@ -412,7 +413,7 @@ export async function retrieve(
     sid = '',
     turn = 0,
     referralText = null,
-    vector = process.env.DSH_MEMORY_CORE_VECTOR !== 'off',
+    vector = vectorsEnabled(),
   } = {},
 ) {
   // 每轮重新读一次提取强度；否则同一进程里 used 回填后分数不会变。
