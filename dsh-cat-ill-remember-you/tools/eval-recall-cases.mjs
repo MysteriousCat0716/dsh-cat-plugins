@@ -14,7 +14,7 @@ const db = new DatabaseSync(DB, { readOnly: true })
 
 const has = db.prepare('SELECT id FROM memories WHERE id = ?')
 
-let hit = 0, dropped = 0, miss = 0, absent = 0
+let hit = 0, dropped = 0, miss = 0, absent = 0, p1 = 0, p2num = 0, p2den = 0
 const rows = []
 
 for (const c of CASES) {
@@ -26,6 +26,14 @@ for (const c of CASES) {
   }
   const hits = await retrieve(db, { text: c.q, sid: 'eval-' + c.id, turn: 1 })
   const picked = hits.filter((h) => h.section !== 'persona')
+  // Precision@K：want 是「可接受集合」，不在里面的不一定无关（比如同一件事
+  // 的另一种说法），所以这个数只会偏低，不会偏高。
+  const top2 = picked.slice(0, 2)
+  for (const h of top2) {
+    p2den += 1
+    if (present.includes(Number(h.id))) p2num += 1
+  }
+  if (top2.length && present.includes(Number(top2[0].id))) p1 += 1
   const rank = picked.findIndex((h) => present.includes(Number(h.id)))
   const trace = hits.trace || []
   if (rank >= 0) {
@@ -49,3 +57,5 @@ console.log(`命中 ${hit} / 落选 ${dropped} / 没进候选 ${miss} / 库里�
 console.log(`存储覆盖率 ${(stored / CASES.length * 100).toFixed(1)}%（${stored}/${CASES.length}）`)
 console.log(`条件召回率 ${stored ? (hit / stored * 100).toFixed(1) : '-'}%（${hit}/${stored}）`)
 console.log(`端到端 ${(hit / CASES.length * 100).toFixed(1)}%（${hit}/${CASES.length}）`)
+console.log(`Precision@1 ${(p1 / CASES.length * 100).toFixed(1)}%（${p1}/${CASES.length}）`)
+console.log(`Precision@2 ${p2den ? (p2num / p2den * 100).toFixed(1) : '-'}%（${p2num}/${p2den} 条取回里是目标）`)

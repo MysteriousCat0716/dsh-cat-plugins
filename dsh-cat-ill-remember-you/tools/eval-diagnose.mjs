@@ -1,67 +1,78 @@
 #!/usr/bin/env node
 /**
- * 每条例子的完整诊断：目标记忆卡在哪一段。
+ * 逐条诊断：目标记忆卡在流水线的哪一段。
  *
- *   库里没有 → 提炼层漏了
- *   词面零重叠 → 索引/切词阶段断了（query 的词一个都不在目标记忆里）
- *   进候选被丢 → 评分或门槛的问题
- *   进了没进最终 → 截断位置的问题
- *   取回        → 通了
+ * 不靠 recall.js 的落选账反推——那一本最多记 12 条，目标排在 13 位以后
+ * 就会被误判成「词面零重叠」。这里直接重跑候选池查询，看目标在不在池里、
+ * 排第几，再跟最终结果对。
+ *
+ *   ABSENT   库里没有这条（提炼层漏了）
+ *   POOL     候选池（前 200）里没有它 → 索引/切词阶段断了
+ *   GATE     在池里，但没进最终，也没留下落选记录（被门槛或截断丢掉）
+ *   DROPPED  在池里，被门槛丢，落选账记了原因
+ *   PICKED   进了最终结果
  */
 import { DatabaseSync } from 'node:sqlite'
 import { retrieve, weakTerms } from '../lib/recall.js'
+import { expandTerms } from '../lib/aliases.js'
 import { CASES } from './eval-cases.mjs'
 
 const DB = process.env.DSH_MEMORY_CORE_DB || 'C:/Users/54048/.dsh/memory/core.db'
 const db = new DatabaseSync(DB, { readOnly: true })
-const byId = db.prepare('SELECT id, text, summary FROM memories WHERE id = ?')
+const byId = db.prepare('SELECT id, kind, text FROM memories WHERE id = ?')
 
 const only = process.argv[2]
 const tally = new Map()
+const bump = (k) => tally.set(k, (tally.get(k) || 0) + 1)
 
 for (const c of CASES) {
   if (only && !c.id.startsWith(only)) continue
   const rows = c.want.map((id) => byId.get(id)).filter(Boolean)
   const terms = weakTerms(c.q)
+  const { all } = expandTerms(terms)
+
+  // 重跑候选池：与 recall.js 的 SQL 保持一致的形状
+  let pool = []
+  if (all.length) {
+    const like = all.map(() => `(text LIKE ? ESCAPE '\\')`).join(' OR ')
+    const overlap = all.map(() => `(text LIKE ? ESCAPE '\\')`).join(' + ')
+    const values = all.map((t) => `%${t}%`)
+    pool = db
+      .prepare(
+        `SELECT id FROM memories WHERE tier='active' AND origin IN ('chat','unknown')
+           AND (${like}) ORDER BY (${overlap}) DESC, t DESC LIMIT 200`,
+      )
+      .all(...values, ...values)
+      .map((r) => Number(r.id))
+  }
+  const poolAt = pool.findIndex((id) => c.want.includes(id))
+
   const hits = await retrieve(db, { text: c.q, sid: 'diag-' + c.id, turn: 1 })
   const picked = hits.filter((h) => h.section !== 'persona')
-  const trace = hits.trace || []
-
-  const overlap = rows.map((r) => {
-    const body = `${r.summary || ''} ${r.text || ''}`
-    return { id: r.id, got: terms.filter((w) => body.includes(w)) }
-  })
-  const best = overlap.reduce((a, b) => (b.got.length > a.got.length ? b : a), { got: [] })
-
   const at = picked.findIndex((h) => c.want.includes(Number(h.id)))
-  const tr = trace.find((t) => c.want.includes(Number(t.id)))
+  const tr = (hits.trace || []).find((t) => c.want.includes(Number(t.id)))
 
   let stage
-  if (!rows.length) stage = '库里没有'
-  else if (at >= 0) stage = `取回（第 ${at + 1} 位）`
-  else if (tr) stage = `进候选被丢（${tr.reason}，${tr.score}）`
-  else if (best.got.length === 0) stage = '词面零重叠'
-  else stage = '进池但没进最终'
+  if (!rows.length) stage = 'ABSENT'
+  else if (at >= 0) stage = 'PICKED'
+  else if (poolAt < 0) stage = 'POOL'
+  else if (tr) stage = 'DROPPED'
+  else stage = 'GATE'
+  bump(stage)
 
-  tally.set(stage, (tally.get(stage) || 0) + 1)
-  console.log(`${c.id.padEnd(3)} ${stage}`)
+  let extra = ''
+  if (stage === 'PICKED') extra = `第 ${at + 1} 位`
+  else if (stage === 'POOL') extra = `候选池 ${pool.length} 条，目标不在里面`
+  else if (stage === 'DROPPED') extra = `${tr.reason} @${tr.score}`
+  else if (stage === 'GATE') extra = `候选池第 ${poolAt + 1} 位，未进最终`
+
+  console.log(`${c.id.padEnd(3)} ${stage.padEnd(8)} ${extra}`)
   console.log(`    「${c.q}」→ ${terms.length} 词：${terms.join(' ') || '（空）'}`)
-  for (const o of overlap) {
-    console.log(`    #${o.id} 重叠 ${o.got.length}：${o.got.join(' ') || '（无）'}`)
+  for (const r of rows) {
+    const got = terms.filter((w) => (r.text || '').includes(w))
+    console.log(`    #${r.id} 词面重叠 ${got.length}：${got.join(' ') || '（无）'}`)
   }
 }
 
 console.log('')
 for (const [k, v] of tally) console.log(`${k}: ${v}`)
-
-// 第二段：看某个用例的候选与落选账
-if (process.env.DETAIL) {
-  for (const c of CASES) {
-    if (c.id !== process.env.DETAIL) continue
-    const hits = await retrieve(db, { text: c.q, sid: 'diag-' + c.id, turn: 1 })
-    console.log('\n=== ' + c.id + ' 最终 ===')
-    for (const h of hits) console.log(' ', h.section, '#' + h.id, Math.round((h.score || 0) * 1000) / 1000)
-    console.log('--- 落选账 ---')
-    for (const t of hits.trace || []) console.log(' ', t.section, '#' + t.id, t.score, t.reason)
-  }
-}

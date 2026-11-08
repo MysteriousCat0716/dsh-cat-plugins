@@ -159,8 +159,9 @@ function countOccurrences(text, term) {
 /** 首字是代词/副词/连词的二字词，多半是「我说」「你说」「也不」这类
  *  拼出来的碎片：df 小、看着稀有，实际不指代任何东西。降权而不是删掉——
  *  「你造我时讲的那个故事」里「你造」是唯一线索，删了整句就断了。 */
-const FUNCTIONAL_START =
-  /^[我你他她它这那也还就都不没别很太又再才只正在会能要想让给对和与是有说被把从到为以]/
+// 只收代词和副词：它们开头的二字词基本不指代任何东西（「我说」「也不」）。
+// 「会」「说」「有」这类不收——「会话」「说法」「有趣」是真词，降权会伤真线索。
+const FUNCTIONAL_START = /^[我你他她它这那也还就都不没别很太又再才只正让]/
 export function functionalPenalty(term) {
   return term.length === 2 && FUNCTIONAL_START.test(term) ? 0.3 : 1
 }
@@ -637,16 +638,21 @@ export async function retrieve(
       // 别名扩展：把「考研」也拿去查「上岸」，同组词按 0.7 折。
       const { all, discount } = expandTerms(terms);
       const like = all.map(() => `(text LIKE ? ESCAPE '\\')`).join(' OR ');
+      // 取候选时按「命中几个查询词」排，不按时间排：按时间排的话，一条两年前
+      // 的记忆只要最近有 200 条别的记忆也含这些词，就永远进不了评分阶段。
+      const overlap = all.map(() => `(text LIKE ? ESCAPE '\\')`).join(' + ');
       const values = all.map((term) => `%${escapeLike(term)}%`);
       const rows = db
         .prepare(
           `SELECT id, kind, summary, text, entities, anchors, t, mentions, confidence, retention FROM memories
            WHERE tier = 'active' AND origin IN ('chat', 'unknown') AND (${like})
-           ORDER BY t DESC LIMIT 200`,
+           ORDER BY (${overlap}) DESC, t DESC LIMIT 200`,
         )
-        .all(...values);
+        .all(...values, ...values);
+      // df 必须和 stats 用同一个语料范围，否则 df 可能大于 N，
+      // IDF 变成负数，本该召回的那条被 score<=0 直接丢掉。
       const countStmt = db.prepare(
-        "SELECT count(*) AS c FROM memories WHERE text LIKE ? ESCAPE '\\'",
+        "SELECT count(*) AS c FROM memories WHERE tier = 'active' AND origin IN ('chat', 'unknown') AND text LIKE ? ESCAPE '\\'",
       );
       const weightOf = new Map();
       const stats = db
