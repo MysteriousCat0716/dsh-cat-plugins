@@ -166,6 +166,31 @@ export function functionalPenalty(term) {
   return term.length === 2 && FUNCTIONAL_START.test(term) ? 0.3 : 1
 }
 
+/**
+ * 弱匹配的候选池：词面命中查询词的记忆，先按「命中几个词」排、再按时间排。
+ *
+ * 导出是给 tools/eval-diagnose.mjs 用的。诊断脚本必须读这一份，不能自己再拼
+ * 一遍 SQL——两处实现一分开，评测说「目标在池里」、线上却查不到，这种分叉
+ * 比没有诊断更糟（它给出的是自信的错答案）。
+ *
+ * 关于 LIMIT 200：这是性能折中，不是正确性边界。命中词数相同的两条，老的
+ * 那条仍然可能被新的一批挤出前 200（201 条都命中 2 词、按 t DESC 截断时，
+ * 最老的那条就是被挤掉的）。所以这个上限不「解决」长期记忆的时间截断。
+ */
+export function weakCandidatePool(db, all, limit = 200) {
+  if (!all.length) return []
+  const like = all.map(() => `(text LIKE ? ESCAPE '\\')`).join(' OR ')
+  const overlap = all.map(() => `(text LIKE ? ESCAPE '\\')`).join(' + ')
+  const values = all.map((term) => `%${escapeLike(term)}%`)
+  return db
+    .prepare(
+      `SELECT id, kind, summary, text, entities, anchors, t, mentions, confidence, retention
+         FROM memories WHERE tier='active' AND origin IN ('chat','unknown')
+           AND (${like}) ORDER BY (${overlap}) DESC, t DESC LIMIT ${Number(limit) || 200}`,
+    )
+    .all(...values, ...values)
+}
+
 function weakScoreOf(db, terms, text, weightOf, countStmt, discount, stats) {
   const body = String(text ?? '');
   const len = body.length || 1;
@@ -449,6 +474,12 @@ export async function retrieve(
   // （数组也是对象），不改变 retrieve 的返回形状，调用方按需读 hits.trace。
   // 上限 12 条：够看出「这轮为什么空」，又不至于把账本撑大。
   const trace = [];
+  // 层的账：哪一层真的跑了、哪一层被预算挡在门外。trace 只记落选条目，
+  // 说不出「这一层根本没执行」——诊断脚本少了这份账，就会把「没跑」判成
+  // 「进池被拒」（GATE），把责任安到一个当时并不存在的阶段上。
+  const layers = [];
+  const ran = (name, extra) => layers.push({ name, ran: true, ...extra });
+  const skipped = (name, reason) => layers.push({ name, ran: false, reason });
   const note = (item, reason) => {
     if (!item || trace.length >= 12) return;
     trace.push({
@@ -586,7 +617,12 @@ export async function retrieve(
   // 话里一带文件名这条通路就永远轮不到——而语义相近的旧事往往恰恰不共享词。
   // Ollama 不在就跳过，不解释、不报错——降级回下面的词面弱匹配。
   // why 写明是向量，别让它冒充锚点。
-  if (hits.length < MAX_HITS && vector && Date.now() > vectorCooldownUntil) {
+  const vectorRan = hits.length < MAX_HITS && vector && Date.now() > vectorCooldownUntil;
+  if (vectorRan) ran('vector');
+  else if (hits.length >= MAX_HITS) skipped('vector', 'budget-full');
+  else if (!vector) skipped('vector', 'off');
+  else skipped('vector', 'cooldown');
+  if (vectorRan) {
     try {
       const endpoint = (
         process.env.DSH_MEMORY_CORE_OLLAMA || DEFAULT_ENDPOINT
@@ -632,23 +668,22 @@ export async function retrieve(
   // 用句子里的实词在记忆正文里找。旧实现要求「前面全空」才跑，而向量层
   // 已经先占了一个槽位，这一层几乎永远轮不到——变成只有向量失败时才兜底。
   // 现在只要还差一条就试，让词面重合和语义相近各拿一次机会。
-  if (hits.length < MAX_HITS) {
-    const terms = weakTerms(query.text);
+  const weakRan = hits.length < MAX_HITS;
+  const weakTermList = weakRan ? weakTerms(query.text) : [];
+  if (!weakRan) skipped('weak', 'budget-full');
+  else if (!weakTermList.length) skipped('weak', 'no-terms');
+  if (weakRan) {
+    const terms = weakTermList;
     if (terms.length) {
       // 别名扩展：把「考研」也拿去查「上岸」，同组词按 0.7 折。
       const { all, discount } = expandTerms(terms);
-      const like = all.map(() => `(text LIKE ? ESCAPE '\\')`).join(' OR ');
+      // 记下这一层实际用的词：诊断脚本要照同一组词去查候选池，
+      // 自己重新分词就会拿另一组词问一个不同的问题。
+      layers.push({ name: 'weak', ran: true, terms: all });
       // 取候选时按「命中几个查询词」排，不按时间排：按时间排的话，一条两年前
       // 的记忆只要最近有 200 条别的记忆也含这些词，就永远进不了评分阶段。
-      const overlap = all.map(() => `(text LIKE ? ESCAPE '\\')`).join(' + ');
-      const values = all.map((term) => `%${escapeLike(term)}%`);
-      const rows = db
-        .prepare(
-          `SELECT id, kind, summary, text, entities, anchors, t, mentions, confidence, retention FROM memories
-           WHERE tier = 'active' AND origin IN ('chat', 'unknown') AND (${like})
-           ORDER BY (${overlap}) DESC, t DESC LIMIT 200`,
-        )
-        .all(...values, ...values);
+      // 这条查询在 weakCandidatePool 里，诊断脚本读的是同一份实现，不另写一份。
+      const rows = weakCandidatePool(db, all);
       // df 必须和 stats 用同一个语料范围，否则 df 可能大于 N，
       // IDF 变成负数，本该召回的那条被 score<=0 直接丢掉。
       const countStmt = db.prepare(
@@ -728,7 +763,11 @@ export async function retrieve(
   }
 
   // L3: only with a referent and only when the upper layers left room.
-  if (query.referral && hits.length < MAX_HITS) {
+  const originalRan = query.referral && hits.length < MAX_HITS;
+  if (!query.referral) skipped('original', 'no-referral');
+  else if (hits.length >= MAX_HITS) skipped('original', 'budget-full');
+  else ran('original');
+  if (originalRan) {
     const terms = [
       ...query.anchors.slice(0, 3),
       ...query.entities.filter((value) => value.length >= 2).slice(0, 3),
@@ -853,6 +892,7 @@ export async function retrieve(
   }
   const result = [...persona, ...picked];
   result.trace = trace;
+  result.layers = layers;
   // 落选的账在 trace，入选的账在这里：没有这一半，就量不出「向量层 / 弱匹配
   // 各救过几次」，也就没法拿数据判断某一层该不该留。
   result.pickedDetail = picked.map((hit) => ({

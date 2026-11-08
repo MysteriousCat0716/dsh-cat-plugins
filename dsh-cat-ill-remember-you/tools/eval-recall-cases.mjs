@@ -4,6 +4,14 @@
  *   DROPPED 进了候选、被评分/门槛丢掉了
  *   MISS    根本没进候选池
  *   ABSENT  这条记忆在库里找不到（不是召回问题，是没存下）
+ *
+ * 指标口径（2026-11-08 汀第七轮评审后改名）：
+ *   TargetHit@1    已有返回的用例里，第 1 条是不是已标注目标。
+ *   TargetRatio@2  前 2 条返回结果里，已标注目标占几条。
+ *
+ * 这两个都不是标准 Precision@K。want 只是「可接受集合」，不在 want 里的
+ * 不一定无关（可能是同一件事的另一种说法）；真正的 Precision@K 要先把每条
+ * 用例的相关记忆标注完整才谈得上。名字不改就会让人以为它代表了没验证的东西。
  */
 import { DatabaseSync } from 'node:sqlite'
 import { retrieve } from '../lib/recall.js'
@@ -14,7 +22,8 @@ const db = new DatabaseSync(DB, { readOnly: true })
 
 const has = db.prepare('SELECT id FROM memories WHERE id = ?')
 
-let hit = 0, dropped = 0, miss = 0, absent = 0, p1 = 0, p2num = 0, p2den = 0
+let hit = 0, dropped = 0, miss = 0, absent = 0
+let t1num = 0, t1den = 0, t2num = 0, t2den = 0
 const rows = []
 
 for (const c of CASES) {
@@ -26,14 +35,15 @@ for (const c of CASES) {
   }
   const hits = await retrieve(db, { text: c.q, sid: 'eval-' + c.id, turn: 1 })
   const picked = hits.filter((h) => h.section !== 'persona')
-  // Precision@K：want 是「可接受集合」，不在里面的不一定无关（比如同一件事
-  // 的另一种说法），所以这个数只会偏低，不会偏高。
+  // 分母只算真的跑过检索的用例：库里有没这条记忆，跟「第一条取得准不准」
+  // 是两件事，ABSENT 塞进 TargetHit@1 的分母会把召回问题算成排序问题。
   const top2 = picked.slice(0, 2)
+  t1den += 1
+  if (top2.length && present.includes(Number(top2[0].id))) t1num += 1
   for (const h of top2) {
-    p2den += 1
-    if (present.includes(Number(h.id))) p2num += 1
+    t2den += 1
+    if (present.includes(Number(h.id))) t2num += 1
   }
-  if (top2.length && present.includes(Number(top2[0].id))) p1 += 1
   const rank = picked.findIndex((h) => present.includes(Number(h.id)))
   const trace = hits.trace || []
   if (rank >= 0) {
@@ -57,5 +67,9 @@ console.log(`命中 ${hit} / 落选 ${dropped} / 没进候选 ${miss} / 库里�
 console.log(`存储覆盖率 ${(stored / CASES.length * 100).toFixed(1)}%（${stored}/${CASES.length}）`)
 console.log(`条件召回率 ${stored ? (hit / stored * 100).toFixed(1) : '-'}%（${hit}/${stored}）`)
 console.log(`端到端 ${(hit / CASES.length * 100).toFixed(1)}%（${hit}/${CASES.length}）`)
-console.log(`Precision@1 ${(p1 / CASES.length * 100).toFixed(1)}%（${p1}/${CASES.length}）`)
-console.log(`Precision@2 ${p2den ? (p2num / p2den * 100).toFixed(1) : '-'}%（${p2num}/${p2den} 条取回里是目标）`)
+console.log(
+  `TargetHit@1 ${t1den ? (t1num / t1den * 100).toFixed(1) : '-'}%（${t1num}/${t1den} 个跑过检索的用例）`,
+)
+console.log(
+  `TargetRatio@2 ${t2den ? (t2num / t2den * 100).toFixed(1) : '-'}%（${t2num}/${t2den} 条取回里是目标）`,
+)
