@@ -6,10 +6,11 @@ import { retrieve } from '../lib/recall.js';
 
 const layerOf = (hits, name) => (hits.layers || []).find((layer) => layer.name === name);
 
-// 这两条盯的是「completed 什么时候写」。汀的意思：查询成功不等于这一层
-// 处理完了——查询之后还有评分、门槛筛选、排序、入列。原来 weak 和 original
-// 都在查询一返回就记 completed，中途出错也会留下一条「跑成了」的记录。
-// 现在两处都挪到本层最后一行。
+// 这两条验证的是「正常跑完之后的状态和附加信息」：weak 层该带 terms、original
+// 层该是 completed、两层都不在半路掉成别的状态。
+// **记录发生在第几行，测试不证明**——正常路径上往后挪二十行，两条记录长得
+// 一模一样；只有中途抛错才看得出差别，而那时 retrieve 会整个抛出去，调用方
+// 拿不到 layers。时序靠代码位置审查，不靠这两条测试。
 
 test('weak 层：整层处理完之后才记 completed，且带上实际查询词', async () => {
   const db = openStore(':memory:');
