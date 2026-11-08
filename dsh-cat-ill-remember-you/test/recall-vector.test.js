@@ -64,3 +64,57 @@ test('retrieve: 锚点命中一条后，向量仍能补一条没有共享词的�
     db.close();
   }
 });
+
+// 汀第九轮：completed 指「候选搜索正常返回、本层处理完了」，不指「遍历完
+// 所有候选」。向量层命中一条合格的就 break，这种提前结束同样是 completed。
+// 这条测试盯住那个「提前结束」：库里两条都够格，最后只应取回一条。
+test('向量层：命中一条就 break，提前结束仍记 completed', async () => {
+  const db = openStore(':memory:');
+  const insert = db.prepare(
+    `INSERT INTO memories (kind, text, summary, why, t) VALUES ('decision', ?, ?, 'z', ?)`,
+  );
+  const ids = [
+    Number(insert.run('换缓存之前先量一下命中率', '量完再换', 900).lastInsertRowid),
+    Number(insert.run('压缩策略先看丢了什么', '看丢了什么', 800).lastInsertRowid),
+  ];
+
+  const { server, port } = await fakeOllama([1, 0, 0]);
+  const previous = process.env.DSH_MEMORY_CORE_OLLAMA;
+  try {
+    process.env.DSH_MEMORY_CORE_OLLAMA = `http://127.0.0.1:${port}`;
+    const write = db.prepare(
+      `INSERT INTO embeddings (memory_id, model, dim, vec, t)
+       VALUES (?, 'qwen3-embedding:0.6b', 3, ?, ?)`,
+    );
+    for (const [index, id] of ids.entries()) {
+      write.run(id, Buffer.from(new Float32Array([1, 0, 0]).buffer), 900 - index);
+    }
+
+    const hits = await retrieve(db, {
+      text: '之前那件跟缓存有关的事怎么处理的',
+      recent: [],
+      now: 2000,
+      vector: true,
+    });
+
+    const vectorHits = hits.filter((hit) => hit.section === 'vector');
+    assert.equal(
+      vectorHits.length,
+      1,
+      `向量层没有在第一条之后停手，取回了 ${vectorHits.length} 条`,
+    );
+
+    const vector = (hits.layers || []).find((layer) => layer.name === 'vector');
+    assert.ok(vector, '向量层没有留下记录');
+    assert.equal(
+      vector.status,
+      'completed',
+      '命中一条后提前结束被记成了别的状态，日志会把正常路径读成失败',
+    );
+  } finally {
+    if (previous === undefined) delete process.env.DSH_MEMORY_CORE_OLLAMA;
+    else process.env.DSH_MEMORY_CORE_OLLAMA = previous;
+    server.close();
+    db.close();
+  }
+});

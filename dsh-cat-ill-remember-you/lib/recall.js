@@ -632,6 +632,8 @@ export async function retrieve(
     // ran 只说明「轮到它了」，不说明它真跑成了：Ollama 没起的时候这一层
     // 什么都没检到，日志里却写 ran——将来拿这本账量向量召回，会读成「跑了
     // 但没效果」。先记 attempted，走完再改成 completed / failed。
+    // completed 指「候选搜索正常返回、本层该做的处理做完了」，不指「遍历完
+    // 所有候选」：命中一条合格的就 break，命中后提前结束同样算 completed。
     let vectorStatus = 'attempted';
     let vectorReason = '';
     try {
@@ -701,9 +703,6 @@ export async function retrieve(
       // 的记忆只要最近有 200 条别的记忆也含这些词，就永远进不了评分阶段。
       // 这条查询在 weakCandidatePool 里，诊断脚本读的是同一份实现，不另写一份。
       const rows = weakCandidatePool(db, all);
-      // 查询做完了才记 completed。层名带上这一层实际用的词：诊断脚本要照
-      // 同一组词去查候选池，自己重新分词就会拿另一组词问一个不同的问题。
-      layers.push({ name: 'weak', ran: true, status: 'completed', terms: all });
       // df 必须和 stats 用同一个语料范围，否则 df 可能大于 N，
       // IDF 变成负数，本该召回的那条被 score<=0 直接丢掉。
       const countStmt = db.prepare(
@@ -779,6 +778,13 @@ export async function retrieve(
       // 按分数取前几条交给 push，剩下的会被记成 budget。
       candidates.sort((a, b) => b.score - a.score);
       for (const item of candidates.slice(0, MAX_HITS + 2)) push(item);
+      // 整层处理完才记 completed：查询成功不等于这层完成，后面还有评分、
+      // 门槛筛选、归一化、排序和入列。层名带上这一层实际用的词，诊断脚本
+      // 要照同一组词去查候选池，自己重新分词就会拿另一组词问一个不同的问题。
+      layers.push({ name: 'weak', ran: true, status: 'completed', terms: all });
+    } else {
+      // 轮到了，但抽不出能查的词（全是虚词窗口）：没有可查的就谈不上失败。
+      layers.push({ name: 'weak', ran: true, status: 'completed', terms: [] });
     }
   }
 
@@ -808,8 +814,7 @@ export async function retrieve(
          WHERE origin = 'chat'${cwdClause} AND (${clauses3}) AND t >= ? ORDER BY t DESC LIMIT 6`,
       )
       .all(...cwdParams, ...values, now - TURN_WINDOW_MS);
-    // 查询做完了才记。写在调用之前的话，查询炸了日志里也写着 completed。
-    layers.push({ name: 'original', ran: true, status: 'completed' });
+    // 记录挪到整层处理完之后（见循环后面）：查询炸了会冒到上面去，这里不写 completed。
     for (const row of rows) {
       const text = String(row.text ?? '');
       // The current message is already in `turns`; pasting it back as "what
@@ -838,6 +843,8 @@ export async function retrieve(
         : '这一轮只有指代、抽不出名词；按「上次那件事」回看最近的原文。';
       push(item);
     }
+    // 整层处理完才记：查完还要逐条判重、补 why、算分、入列。
+    layers.push({ name: 'original', ran: true, status: 'completed' });
   }
 
   // 分区优先级：人物 → 工具 → 按需。前两个各最多一条，都算进 2 条总预算。
