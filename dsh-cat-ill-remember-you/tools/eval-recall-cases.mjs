@@ -44,5 +44,8 @@ for (const c of CASES) {
 const pad = (s, n) => String(s).padEnd(n)
 for (const r of rows) console.log(pad(r.id, 4), pad(r.out, 8), pad(r.rank, 5), r.detail)
 console.log('')
+const stored = CASES.length - absent
 console.log(`命中 ${hit} / 落选 ${dropped} / 没进候选 ${miss} / 库里没有 ${absent}   共 ${CASES.length}`)
-console.log(`取回率 ${(hit / CASES.length * 100).toFixed(1)}%`)
+console.log(`存储覆盖率 ${(stored / CASES.length * 100).toFixed(1)}%（${stored}/${CASES.length}）`)
+console.log(`条件召回率 ${stored ? (hit / stored * 100).toFixed(1) : '-'}%（${hit}/${stored}）`)
+console.log(`端到端 ${(hit / CASES.length * 100).toFixed(1)}%（${hit}/${CASES.length}）`)

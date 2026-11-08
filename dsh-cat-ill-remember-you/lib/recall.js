@@ -156,31 +156,46 @@ function countOccurrences(text, term) {
  * 第三条「命中在 user 问句里 > assistant 长解释里」需要 role，memories
  * 没有这个列，先不做；summary 里已经带着「问：/答：」的形态，后面再说。
  */
-function weakScoreOf(db, terms, text, weightOf, countStmt, discount) {
+/** 首字是代词/副词/连词的二字词，多半是「我说」「你说」「也不」这类
+ *  拼出来的碎片：df 小、看着稀有，实际不指代任何东西。降权而不是删掉——
+ *  「你造我时讲的那个故事」里「你造」是唯一线索，删了整句就断了。 */
+const FUNCTIONAL_START =
+  /^[我你他她它这那也还就都不没别很太又再才只正在会能要想让给对和与是有说被把从到为以]/
+export function functionalPenalty(term) {
+  return term.length === 2 && FUNCTIONAL_START.test(term) ? 0.3 : 1
+}
+
+function weakScoreOf(db, terms, text, weightOf, countStmt, discount, stats) {
   const body = String(text ?? '');
+  const len = body.length || 1;
+  const avg = stats.avg || 1;
+  const N = stats.n || 1;
+  // BM25 的两个常数，取论文里的常用值。k1 控制词频饱和，b 控制长度惩罚：
+  // 记忆条目 p50 是 436 字、p90 到 1330 字，不惩罚长度的话，一条把整段
+  // 对话吞进去的长条目靠「碰巧含有」就能压过短而准的那条。
+  const k1 = 1.2;
+  const b = 0.75;
   let score = 0;
   let hits = 0;
-  let maxWeight = 0;
+  let minDf = Infinity;
+  const hitSet = new Set();
   for (const term of terms) {
     const tf = countOccurrences(body, term);
     if (tf === 0) continue;
-    // 别名命中算「半个窗口」：它是同一件东西的另一种叫法，证据比用户原话里
-    // 直接出现的词弱一档，不该单独凑够两个窗口的门槛。
     const d = discount?.get(term) ?? 1;
     hits += d;
-    let weight = weightOf.get(term);
-    if (weight === undefined) {
+    let w = weightOf.get(term);
+    if (w === undefined) {
       const df = Number(countStmt.get(`%${escapeLike(term)}%`)?.c) || 0;
-      weight = 1 / Math.log(2 + df);
-      weightOf.set(term, weight);
+      w = { idf: Math.log(1 + (N - df + 0.5) / (df + 0.5)), df };
+      weightOf.set(term, w);
     }
-    score += Math.min(tf, 3) * weight * d;
-    maxWeight = Math.max(maxWeight, weight * d);
+    const norm = (tf * (k1 + 1)) / (tf + k1 * (1 - b + (b * len) / avg));
+    score += w.idf * norm * functionalPenalty(term) * d;
+    if (w.df < minDf) minDf = w.df;
+    hitSet.add(term);
   }
-  // hits 与 maxWeight 一起交回去：单个窗口的重合大多是巧合（「压缩要」也能对上
-  // 一篇讲 VS Code 的正文），要求至少两个不同窗口命中才认——除非命中的那个词
-  // 本身就很稀有（全库只在一两条里出现，df <= 2，权重 >= 0.7）。
-  return { score, hits, maxWeight };
+  return { score, hits, minDf, hitSet };
 }
 
 /** Pull the scene out of a stored `当时：…｜依据：…` why. */
@@ -634,15 +649,57 @@ export async function retrieve(
         "SELECT count(*) AS c FROM memories WHERE text LIKE ? ESCAPE '\\'",
       );
       const weightOf = new Map();
+      const stats = db
+        .prepare(
+          "SELECT count(*) AS n, avg(length(text)) AS avg FROM memories WHERE tier = 'active' AND origin IN ('chat', 'unknown')",
+        )
+        .get();
+      const idfOf = (term) => {
+        let w = weightOf.get(term);
+        if (w === undefined) {
+          const df = Number(countStmt.get(`%${escapeLike(term)}%`)?.c) || 0;
+          w = { idf: Math.log(1 + (stats.n - df + 0.5) / (df + 0.5)), df };
+          weightOf.set(term, w);
+        }
+        return w;
+      };
+      // 这一句里信息量最大的那个词。它没命中，说明这条记忆只是碰巧含有
+      // 几个常见词——半句话重合不值得占一个槽位。
+      let topTerm = null;
+      let topIdf = 0;
+      for (const term of all) {
+        const w = idfOf(term);
+        // 库里一次都没出现的词不进候选：它给的 idf 最大，但任何记忆都不可能
+        // 命中它，拿它当「必须命中」的锚会让整句一个候选都过不了。
+        if (w.df === 0) continue;
+        if (w.idf > topIdf) {
+          topIdf = w.idf;
+          topTerm = term;
+        }
+      }
       const candidates = [];
       for (const row of rows) {
         const item = rowToItem(row, 'memory');
         if (seen.has(`memory:${item.id}`) || given.has(`memory:${item.id}`)) continue;
-        const { score, hits, maxWeight } = weakScoreOf(db, all, row.text, weightOf, countStmt, discount);
+        const { score, hits, minDf, hitSet } = weakScoreOf(
+          db, all, row.text, weightOf, countStmt, discount, stats,
+        );
         // 单个词窗口的重合大多是巧合（「压缩要」也能撞上一篇讲 VS Code 的正文）。
         // 短句本身只有一两个窗口，不强求两个；有得挑时要求至少两个不同窗口，
         // 或者命中词本身就很稀有（df <= 2，权重 >= 0.7）。
-        const rare = maxWeight >= 0.7;
+        // 单命中要认，得同时满足三条：命中的词够稀（df<=7）、它是这一句里
+        // 信息量最大的词、而且比这一句里没命中的词稀一倍以上。第三条是为了
+        // 挡住「今天天气不错」这种：query 里有个更该命中的词没命中，说明
+        // 这条记忆只是碰巧含有几个常见字。
+        const others = all
+          .filter((term) => !hitSet.has(term))
+          .map((term) => idfOf(term).df)
+          .filter((df) => df > 0);
+        const rare =
+          minDf <= 7 &&
+          hitSet.has(topTerm) &&
+          others.length > 0 &&
+          others.every((df) => df >= minDf * 2);
         if (score <= 0 || (hits < Math.min(2, terms.length) && !rare)) {
           note(item, 'low-weak');
           continue;
