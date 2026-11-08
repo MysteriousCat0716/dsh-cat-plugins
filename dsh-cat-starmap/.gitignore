@@ -1,0 +1,4 @@
+# 星图数据是记忆库的快照，天天变，不进版本库；
+# 随时可以用 tools/export.mjs 重新生成。
+assets/data.js
+assets/data.json

@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>岸的记忆星图 · 会遗忘的那种</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #05070f; overflow: hidden;
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; color: #dbe7ff; }
+  #sky { display: block; width: 100vw; height: 100vh; cursor: grab; }
+  #sky.dragging { cursor: grabbing; }
+
+  .hud { position: fixed; left: 18px; top: 16px; pointer-events: none; }
+  .hud h1 { margin: 0 0 6px; font-size: 15px; font-weight: 600; letter-spacing: .5px; }
+  .hud .sub { font-size: 11.5px; color: #7d8db3; line-height: 1.7; }
+  .hud .stat { margin-top: 10px; font-size: 11.5px; color: #6f81a8; }
+  .hud .stat b { color: #9fc2ff; font-weight: 600; }
+
+  .legend { position: fixed; right: 18px; top: 16px; display: flex; flex-direction: column; gap: 6px;
+    font-size: 11.5px; color: #8fa1c8; text-align: right; }
+  .legend span.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-left: 7px; vertical-align: 1px; }
+
+  .card { position: fixed; left: 18px; bottom: 18px; max-width: min(520px, 78vw);
+    background: rgba(13, 19, 33, .94); border: 1px solid rgba(120, 160, 240, .28);
+    border-radius: 14px; padding: 14px 16px; font-size: 13px; line-height: 1.75;
+    box-shadow: 0 18px 44px rgba(0,0,0,.55); opacity: 0; transform: translateY(8px);
+    transition: opacity .2s ease, transform .2s ease; pointer-events: none; }
+  .card.on { opacity: 1; transform: translateY(0); pointer-events: auto; }
+  .card .txt { color: #e4edff; white-space: pre-wrap; word-break: break-word; }
+  .card .meta { margin-top: 9px; font-size: 11px; color: #7d8db3; line-height: 1.8; }
+  .card .bar { height: 4px; border-radius: 99px; background: rgba(255,255,255,.09); margin-top: 9px; overflow: hidden; }
+  .card .bar i { display: block; height: 100%; border-radius: 99px;
+    background: linear-gradient(90deg, #6f9dff, #b9e0ff); }
+  .card .close { position: absolute; right: 10px; top: 8px; cursor: pointer; color: #7d8db3; font-size: 15px; }
+
+  .hint { position: fixed; right: 18px; bottom: 18px; font-size: 11px; color: #5d6c8d; text-align: right; line-height: 1.8; }
+</style>
+</head>
+<body>
+<canvas id="sky"></canvas>
+
+<div class="hud">
+  <h1>岸的记忆星图</h1>
+  <div class="sub">
+    球大小 = 重要度　·　亮度 = 还剩多少<br />
+    半衰期：决定与偏好 30 天 · 事实与情绪 12 天<br />
+    被提起三次以上的，衰减更慢
+  </div>
+  <div class="stat" id="stat"></div>
+</div>
+
+<div class="legend" id="legend"></div>
+
+<div class="card" id="card">
+  <span class="close" id="close">×</span>
+  <div class="txt" id="cardText"></div>
+  <div class="bar"><i id="cardBar" style="width:0%"></i></div>
+  <div class="meta" id="cardMeta"></div>
+</div>
+
+<div class="hint">拖动旋转　·　滚轮缩放　·　点一下看原文</div>
+
+<script src="data.js"></script>
+<script>
+(function () {
+  const canvas = document.getElementById('sky');
+  const ctx = canvas.getContext('2d');
+  let W = 0, H = 0, DPR = 1;
+
+  function resize() {
+    DPR = Math.min(2, window.devicePixelRatio || 1);
+    W = canvas.clientWidth; H = canvas.clientHeight;
+    canvas.width = Math.round(W * DPR);
+    canvas.height = Math.round(H * DPR);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // ── 状态 ────────────────────────────────────────────────
+  let stars = [];
+  let yawR = 0.4, pitchR = -0.25;      // 旋转角
+  let zoom = 1;
+  let auto = true;
+  let dragging = false;
+  let lastX = 0, lastY = 0;
+  let hover = null, selected = null;
+
+  const CLUSTERS_LABEL = {
+    decision: '决定',
+    preference: '偏好',
+    emotion: '情绪',
+    fact: '事实',
+    other: '别的',
+  };
+
+  const CLUSTER_COLOR = {
+    decision: [255, 180, 95],
+    preference: [150, 125, 255],
+    emotion: [255, 125, 160],
+    fact: [110, 170, 255],
+    other: [200, 210, 235],
+  };
+
+  // 背景细星（纯装饰）
+  const bg = [];
+  for (let i = 0; i < 260; i++) {
+    bg.push({ x: Math.random(), y: Math.random(), r: Math.random() * 0.9 + 0.2, a: Math.random() * 0.5 + 0.1 });
+  }
+
+  // ── 数据 ────────────────────────────────────────────────
+  function useData(d) {
+      if (!d || !Array.isArray(d.stars)) throw new Error('数据格式不对');
+      {
+      stars = d.stars || [];
+      document.getElementById('stat').innerHTML =
+        '共 <b>' + stars.length + '</b> 颗星　·　快忘光的 <b>' + stars.filter((s) => s.retention < 0.25).length + '</b> 颗<br />' +
+        '生成于 ' + new Date(d.generatedAt).toLocaleString('zh-CN', { hour12: false });
+      const legend = document.getElementById('legend');
+      const seen = new Set();
+      stars.forEach((s) => seen.add(s.source));
+      legend.innerHTML = [...seen].map((k) =>
+        '<div>' + (CLUSTERS_LABEL[k] || k) + '<span class="dot" style="background: rgb(' +
+        (CLUSTER_COLOR[k] || CLUSTER_COLOR.default).join(',') + ')"></span></div>',
+      ).join('');
+      }
+  }
+
+  // 先看内嵌的 data.js（双击打开时 file:// 不能 fetch），没有再回落到 fetch
+  if (window.STARMAP_DATA) {
+    try { useData(window.STARMAP_DATA); } catch (e) {
+      document.getElementById('stat').textContent = '数据有问题：' + e.message;
+    }
+  } else {
+    fetch('data.json', { cache: 'no-store' })
+      .then((r) => r.json())
+      .then(useData)
+      .catch(() => {
+        document.getElementById('stat').innerHTML =
+          '还没有数据。<br />在插件目录跑一次 <b>node tools/export.mjs</b>，刷新即可。';
+      });
+  }
+
+
+  // ── 3D → 2D（自己算透视，不装 three.js）────────────────────
+  const FOCAL = 900;
+  const DIST = 3.6;
+
+  function project(p, out) {
+    const cosY = Math.cos(yawR), sinY = Math.sin(yawR);
+    const cosP = Math.cos(pitchR), sinP = Math.sin(pitchR);
+
+    let x = p[0] * cosY - p[2] * sinY;
+    let z = p[0] * sinY + p[2] * cosY;
+    let y = p[1] * cosP - z * sinP;
+    z = p[1] * sinP + z * cosP;
+
+    const depth = DIST + z;
+    if (depth <= 0.05) return false;
+    const s = (FOCAL * zoom) / depth;
+    out.x = W / 2 + x * s;
+    out.y = H / 2 + y * s;
+    out.r = s;
+    out.depth = depth;
+    return true;
+  }
+
+  const tmp = { x: 0, y: 0, r: 0, depth: 0 };
+
+  function draw() {
+    // 背景
+    ctx.fillStyle = '#05070f';
+    ctx.fillRect(0, 0, W, H);
+
+    // 星云底光
+    const g = ctx.createRadialGradient(W * 0.5, H * 0.48, 40, W * 0.5, H * 0.48, Math.max(W, H) * 0.72);
+    g.addColorStop(0, 'rgba(38, 62, 120, 0.30)');
+    g.addColorStop(0.55, 'rgba(18, 28, 58, 0.16)');
+    g.addColorStop(1, 'rgba(5, 7, 15, 0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+
+    // 装饰细星
+    for (const b of bg) {
+      ctx.globalAlpha = b.a;
+      ctx.fillStyle = '#cfe0ff';
+      ctx.beginPath();
+      ctx.arc(b.x * W, b.y * H, b.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    // 记忆星
+    const list = [];
+    for (const s of stars) {
+      if (!project(s.pos, tmp)) continue;
+      list.push({ s: s, x: tmp.x, y: tmp.y, scale: tmp.r, depth: tmp.depth });
+    }
+    list.sort((a, b) => b.depth - a.depth);   // 远的先画
+
+    for (const it of list) {
+      const s = it.s;
+      const col = CLUSTER_COLOR[s.source] || CLUSTER_COLOR.default;
+      const ret = s.retention;
+      const imp = s.importance;
+
+      // 球半径：重要度决定；透视缩放
+      const rad = Math.max(0.8, (0.9 + imp * 2.4) * (it.scale / 260));
+      // 亮度：还剩多少（快忘光的几乎只剩一点轮廓）
+      const alpha = 0.1 + Math.pow(ret, 1.5) * 0.9;
+
+      // 光晕
+      const glowR = rad * (2.0 + ret * 2.2);
+      const grd = ctx.createRadialGradient(it.x, it.y, 0, it.x, it.y, glowR);
+      grd.addColorStop(0, 'rgba(' + col.join(',') + ',' + (alpha * 0.42).toFixed(3) + ')');
+      grd.addColorStop(1, 'rgba(' + col.join(',') + ',0)');
+      ctx.fillStyle = grd;
+      ctx.beginPath();
+      ctx.arc(it.x, it.y, glowR, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 核心
+      ctx.fillStyle = 'rgba(' + col.join(',') + ',' + alpha.toFixed(3) + ')';
+      ctx.beginPath();
+      ctx.arc(it.x, it.y, rad, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 亮星给个白芯，像真的星
+      if (ret > 0.75) {
+        ctx.fillStyle = 'rgba(255,255,255,' + (0.35 + ret * 0.45).toFixed(3) + ')';
+        ctx.beginPath();
+        ctx.arc(it.x, it.y, Math.max(0.5, rad * 0.42), 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // 选中/悬停描边
+      if (s === selected || s === hover) {
+        ctx.strokeStyle = 'rgba(255,255,255,' + (s === selected ? 0.95 : 0.5) + ')';
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.arc(it.x, it.y, rad + 4, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+
+    // 悬停提示
+    if (hover && !selected) {
+      const text = hover.text.length > 46 ? hover.text.slice(0, 46) + '…' : hover.text;
+      ctx.font = '12px -apple-system, "Microsoft YaHei", sans-serif';
+      const w = ctx.measureText(text).width + 16;
+      ctx.fillStyle = 'rgba(10, 16, 28, .9)';
+      ctx.strokeStyle = 'rgba(120,160,240,.35)';
+      ctx.lineWidth = 1;
+      roundRect(ctx, lastX + 12, lastY + 12, w, 24, 7);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = '#cfe0ff';
+      ctx.fillText(text, lastX + 20, lastY + 28);
+    }
+  }
+
+  function roundRect(c, x, y, w, h, r) {
+    c.beginPath();
+    c.moveTo(x + r, y);
+    c.arcTo(x + w, y, x + w, y + h, r);
+    c.arcTo(x + w, y + h, x, y + h, r);
+    c.arcTo(x, y + h, x, y, r);
+    c.arcTo(x, y, x + w, y, r);
+    c.closePath();
+  }
+
+  function loop() {
+    if (auto && !dragging && !selected) yawR += 0.0016;
+    draw();
+    requestAnimationFrame(loop);
+  }
+  loop();
+
+  // ── 交互 ────────────────────────────────────────────────
+  canvas.addEventListener('pointerdown', (e) => {
+    dragging = true;
+    auto = false;
+    lastX = e.clientX; lastY = e.clientY;
+    canvas.classList.add('dragging');
+  });
+
+  window.addEventListener('pointerup', () => {
+    dragging = false;
+    canvas.classList.remove('dragging');
+  });
+
+  window.addEventListener('pointermove', (e) => {
+    lastX = e.clientX; lastY = e.clientY;
+    if (dragging) {
+      yawR += (e.movementX || 0) * 0.006;
+      pitchR += (e.movementY || 0) * 0.005;
+      pitchR = Math.max(-1.3, Math.min(1.3, pitchR));
+      return;
+    }
+    // 找最近的星（屏幕上 12px 内）
+    let best = null, bestD = 14 * 14;
+    for (const s of stars) {
+      if (!project(s.pos, tmp)) continue;
+      const dx = tmp.x - e.clientX, dy = tmp.y - e.clientY;
+      const d = dx * dx + dy * dy;
+      if (d < bestD) { bestD = d; best = s; }
+    }
+    hover = best;
+  });
+
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    zoom *= e.deltaY > 0 ? 0.92 : 1.08;
+    zoom = Math.max(0.35, Math.min(4, zoom));
+  }, { passive: false });
+
+  canvas.addEventListener('click', (e) => {
+    if (hover) showCard(hover);
+    else hideCard();
+  });
+
+  // ── 卡片 ────────────────────────────────────────────────
+  const card = document.getElementById('card');
+  function showCard(s) {
+    selected = s;
+    document.getElementById('cardText').textContent = s.detail || s.text;
+    document.getElementById('cardBar').style.width = Math.round(s.retention * 100) + '%';
+    document.getElementById('cardMeta').innerHTML =
+      s.band + '（半衰期 ' + s.halfLifeDays + ' 天）· ' + s.days + ' 天前 · 还剩 <b style="color:#9fc2ff">' +
+      Math.round(s.retention * 100) + '%</b><br />' +
+      '重要度 ' + Math.round(s.importance * 100) + '%' +
+      (s.mentions > 1 ? ' · 被提起过 ' + s.mentions + ' 次（往回弹了）' : '') +
+      (s.tags && s.tags.length ? '<br />标签：' + s.tags.join(' / ') : '');
+    card.classList.add('on');
+  }
+  function hideCard() {
+    selected = null;
+    card.classList.remove('on');
+  }
+  document.getElementById('close').addEventListener('click', hideCard);
+})();
+</script>
+</body>
+</html>

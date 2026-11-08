@@ -1,0 +1,34 @@
+{
+  "name": "dsh-cat-starmap",
+  "version": "0.1.0",
+  "description": "把我们自己的记忆库画成一张会遗忘的 3D 星图：球大小按重要度，亮度按还剩多少。数据由 tools/export.mjs 从 core.db 导出，渲染层是纯 Canvas。",
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "assets/index.html",
+    "assets/data.js",
+    "tools/export.mjs",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "memory",
+    "visualization"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

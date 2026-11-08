@@ -1,0 +1,4 @@
+# dsh-cat-starmap —— 只注册一个 webServer 前缀路由，不碰模型、不碰工具。
+- insert:
+    - id: cat-starmap
+      name: 'dsh-cat-starmap'
