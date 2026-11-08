@@ -61,6 +61,60 @@ test('弱匹配被预算挡住时记 budget-full，诊断报 SKIPPED', async () 
   db.close();
 });
 
+test('装盘阶段丢的不算弱匹配淘汰，但原因要带出来', async () => {
+  // 目标进了弱匹配的池，弱匹配也没拒它，最后是装盘时预算满了丢的。
+  // 归成 DROPPED 会把「预算满了」写成「被门槛拒」，两件事不同。
+  const got = classify({
+    want: [9],
+    picked: [],
+    trace: [{ id: 9, layer: 'pack', source: 'memory', section: 'weak', score: 0.6, reason: 'budget' }],
+    layers: [{ name: 'weak', ran: true, status: 'completed', terms: ['笔记'] }],
+    pool: [{ id: 9, text: '一条笔记' }],
+  });
+  assert.equal(got.stage, 'GATE');
+  assert.match(got.extra, /budget/, `装盘的原因应带出来，实际：${got.extra}`);
+});
+
+test('每层都有同一个形状：name / ran / status', async () => {
+  const db = openStore(':memory:');
+  insertMemory(db, { summary: '笔记', text: '一条关于缓存的笔记', t: 1001 });
+  const hits = await retrieve(db, { text: '缓存怎么办', now: 9000 });
+  assert.ok((hits.layers || []).length > 0);
+  for (const layer of hits.layers) {
+    assert.equal(typeof layer.name, 'string');
+    assert.equal(typeof layer.ran, 'boolean');
+    assert.ok(layer.status, `层缺 status：${JSON.stringify(layer)}`);
+  }
+  db.close();
+});
+
+test('Ollama 连不上时向量层记 failed，不是 completed', async () => {
+  const prevVector = process.env.DSH_MEMORY_CORE_VECTOR;
+  const prevEndpoint = process.env.DSH_MEMORY_CORE_OLLAMA;
+  process.env.DSH_MEMORY_CORE_VECTOR = 'on';
+  // 端口 1 上不会有东西在听；endpointReady 会 settle 成 false。
+  process.env.DSH_MEMORY_CORE_OLLAMA = 'http://127.0.0.1:1';
+  try {
+    const db = openStore(':memory:');
+    insertMemory(db, { summary: '笔记', text: '一条关于缓存的笔记', t: 1001 });
+    const hits = await retrieve(db, { text: '天气预报', now: 9000 });
+    const v = (hits.layers || []).find((l) => l.name === 'vector');
+    assert.ok(v, `应有向量层记录：${JSON.stringify(hits.layers)}`);
+    assert.equal(v.ran, true, '轮到它了，ran 为真');
+    assert.equal(v.status, 'failed', '没跑成不能记 completed');
+    assert.ok(
+      v.reason === 'endpoint-down' || v.reason === 'error',
+      `失败原因要说清，实际：${v.reason}`,
+    );
+    db.close();
+  } finally {
+    if (prevVector === undefined) delete process.env.DSH_MEMORY_CORE_VECTOR;
+    else process.env.DSH_MEMORY_CORE_VECTOR = prevVector;
+    if (prevEndpoint === undefined) delete process.env.DSH_MEMORY_CORE_OLLAMA;
+    else process.env.DSH_MEMORY_CORE_OLLAMA = prevEndpoint;
+  }
+});
+
 test('没抽出有效词时记 no-terms，诊断报 SKIPPED', async () => {
   const db = openStore(':memory:');
   insertMemory(db, { summary: '笔记', text: '一条笔记', t: 1001 });

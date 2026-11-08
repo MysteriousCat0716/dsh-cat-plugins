@@ -478,8 +478,10 @@ export async function retrieve(
   // 说不出「这一层根本没执行」——诊断脚本少了这份账，就会把「没跑」判成
   // 「进池被拒」（GATE），把责任安到一个当时并不存在的阶段上。
   const layers = [];
-  const ran = (name, extra) => layers.push({ name, ran: true, ...extra });
-  const skipped = (name, reason) => layers.push({ name, ran: false, reason });
+  // 每层都有同一个形状：name / ran / status / reason。只有 ran 时「进了这一层」
+  // 和「这一层跑成了」会混在一起，量向量召回时会被读成「跑了但没效果」。
+  const ran = (name, extra) => layers.push({ name, ran: true, status: 'completed', ...extra });
+  const skipped = (name, reason) => layers.push({ name, ran: false, status: 'skipped', reason });
   // layer 是这本账的账页号。没有它，同一个 id 可能在 L1 记一次 no-share、
   // 又在弱匹配记一次 low-weak，读账的人拿到第一条就归错因（2026-11-08 汀指出）。
   const note = (layer, item, reason) => {
@@ -695,13 +697,13 @@ export async function retrieve(
     if (terms.length) {
       // 别名扩展：把「考研」也拿去查「上岸」，同组词按 0.7 折。
       const { all, discount } = expandTerms(terms);
-      // 记下这一层实际用的词：诊断脚本要照同一组词去查候选池，
-      // 自己重新分词就会拿另一组词问一个不同的问题。
-      layers.push({ name: 'weak', ran: true, terms: all });
       // 取候选时按「命中几个查询词」排，不按时间排：按时间排的话，一条两年前
       // 的记忆只要最近有 200 条别的记忆也含这些词，就永远进不了评分阶段。
       // 这条查询在 weakCandidatePool 里，诊断脚本读的是同一份实现，不另写一份。
       const rows = weakCandidatePool(db, all);
+      // 查询做完了才记 completed。层名带上这一层实际用的词：诊断脚本要照
+      // 同一组词去查候选池，自己重新分词就会拿另一组词问一个不同的问题。
+      layers.push({ name: 'weak', ran: true, status: 'completed', terms: all });
       // df 必须和 stats 用同一个语料范围，否则 df 可能大于 N，
       // IDF 变成负数，本该召回的那条被 score<=0 直接丢掉。
       const countStmt = db.prepare(
@@ -784,7 +786,6 @@ export async function retrieve(
   const originalRan = query.referral && hits.length < MAX_HITS;
   if (!query.referral) skipped('original', 'no-referral');
   else if (hits.length >= MAX_HITS) skipped('original', 'budget-full');
-  else ran('original');
   if (originalRan) {
     const terms = [
       ...query.anchors.slice(0, 3),
@@ -807,6 +808,8 @@ export async function retrieve(
          WHERE origin = 'chat'${cwdClause} AND (${clauses3}) AND t >= ? ORDER BY t DESC LIMIT 6`,
       )
       .all(...cwdParams, ...values, now - TURN_WINDOW_MS);
+    // 查询做完了才记。写在调用之前的话，查询炸了日志里也写着 completed。
+    layers.push({ name: 'original', ran: true, status: 'completed' });
     for (const row of rows) {
       const text = String(row.text ?? '');
       // The current message is already in `turns`; pasting it back as "what
@@ -910,6 +913,9 @@ export async function retrieve(
   }
   const result = [...persona, ...picked];
   result.trace = trace;
+  // 兜底：以后新加一层忘了写 status，宁可标 unknown 也不要缺字段——
+  // 缺字段会被读成「跑成了」，而 unknown 至少是诚实的。
+  for (const layer of layers) if (!layer.status) layer.status = 'unknown';
   result.layers = layers;
   // 落选的账在 trace，入选的账在这里：没有这一半，就量不出「向量层 / 弱匹配
   // 各救过几次」，也就没法拿数据判断某一层该不该留。

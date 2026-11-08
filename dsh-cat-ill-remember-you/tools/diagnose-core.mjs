@@ -12,6 +12,7 @@
  */
 export function classify({ want, picked = [], trace = [], layers = [], pool = null }) {
   const ids = new Set(want.map(Number))
+  const traceOf = (layer) => (trace || []).find((t) => t.layer === layer && ids.has(Number(t.id)))
 
   const at = picked.findIndex((h) => ids.has(Number(h.id)))
   if (at >= 0) return { stage: 'PICKED', extra: `第 ${at + 1} 位`, terms: [] }
@@ -28,12 +29,21 @@ export function classify({ want, picked = [], trace = [], layers = [], pool = nu
     if (poolAt < 0) {
       return { stage: 'POOL', extra: `候选池 ${pool.length} 条，目标不在里面`, terms }
     }
-    const tr = (trace || []).find((t) => t.layer === 'weak' && ids.has(Number(t.id)))
-    if (tr) return { stage: 'DROPPED', extra: `${tr.reason} @${tr.score}`, terms }
-    return { stage: 'GATE', extra: `候选池第 ${poolAt + 1} 位，未进最终`, terms }
+    const dropped = traceOf('weak')
+    if (dropped) return { stage: 'DROPPED', extra: `${dropped.reason} @${dropped.score}`, terms }
+    // 装盘阶段丢的仍算 GATE（它进了池、也没被弱匹配的门槛拒），但把装盘的
+    // 原因带出来：「预算满了」和「根本没进池」是两件不同的事。
+    const packed = traceOf('pack')
+    return {
+      stage: 'GATE',
+      extra: packed
+        ? `候选池第 ${poolAt + 1} 位，装盘时 ${packed.reason}`
+        : `候选池第 ${poolAt + 1} 位，未进最终`,
+      terms,
+    }
   }
 
-  const tr = (trace || []).find((t) => t.layer === 'weak' && ids.has(Number(t.id)))
-  if (tr) return { stage: 'DROPPED', extra: `${tr.reason} @${tr.score}`, terms }
+  const dropped = traceOf('weak')
+  if (dropped) return { stage: 'DROPPED', extra: `${dropped.reason} @${dropped.score}`, terms }
   return { stage: 'GATE', extra: '候选池未提供，无法定位', terms }
 }
