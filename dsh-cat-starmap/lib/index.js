@@ -59,6 +59,15 @@ export function apply(ctx) {
       handler: (req, res) => {
         try {
           const url = new URL(req.url || '/', 'http://127.0.0.1')
+
+          // 没有尾斜杠时页面里的相对路径会解析到根目录（/data.js → 404），
+          // 所以先重定向到带斜杠的地址。
+          if (url.pathname === ROUTE) {
+            res.writeHead(302, { location: ROUTE + '/' })
+            res.end()
+            return
+          }
+
           let rel = decodeURIComponent(url.pathname.replace(ROUTE, ''))
           if (rel === '' || rel === '/') rel = '/index.html'
 

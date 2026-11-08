@@ -42,10 +42,17 @@ function request(route, path) {
 
 test('starmap: 根路径发 index.html', () => {
   const route = harness()
-  const r = request(route, '/x-starmap')
+  const r = request(route, '/x-starmap/')
   assert.equal(r.status, 200)
   assert.match(r.headers['content-type'], /text\/html/)
   assert.match(r.body, /岸的记忆星图/)
+})
+
+test('starmap: 不带尾斜杠时重定向，否则相对路径会解析到根目录', () => {
+  const route = harness()
+  const r = request(route, '/x-starmap')
+  assert.equal(r.status, 302)
+  assert.equal(r.headers.location, '/x-starmap/')
 })
 
 test('starmap: data.json 发得出去', () => {
