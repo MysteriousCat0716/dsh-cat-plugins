@@ -480,10 +480,13 @@ export async function retrieve(
   const layers = [];
   const ran = (name, extra) => layers.push({ name, ran: true, ...extra });
   const skipped = (name, reason) => layers.push({ name, ran: false, reason });
-  const note = (item, reason) => {
+  // layer 是这本账的账页号。没有它，同一个 id 可能在 L1 记一次 no-share、
+  // 又在弱匹配记一次 low-weak，读账的人拿到第一条就归错因（2026-11-08 汀指出）。
+  const note = (layer, item, reason) => {
     if (!item || trace.length >= 12) return;
     trace.push({
       id: item.id,
+      layer,
       source: item.source ?? 'memory',
       section: item.section ?? '',
       score: Math.round((item.score ?? 0) * 1000) / 1000,
@@ -517,7 +520,7 @@ export async function retrieve(
     for (const row of rows) {
       const item = rowToItem(row, 'memory');
       if (seen.has(`memory:${item.id}`) || given.has(`memory:${item.id}`)) {
-        note(item, given.has(`memory:${item.id}`) ? 'given' : 'already-seen');
+        note('people', item, given.has(`memory:${item.id}`) ? 'given' : 'already-seen');
         continue;
       }
       item.score = scoreOf(item, query, db, now);
@@ -548,7 +551,7 @@ export async function retrieve(
     for (const row of rows) {
       const item = rowToItem(row, 'memory');
       if (seen.has(`memory:${item.id}`) || given.has(`memory:${item.id}`)) {
-        note(item, given.has(`memory:${item.id}`) ? 'given' : 'already-seen');
+        note('tools', item, given.has(`memory:${item.id}`) ? 'given' : 'already-seen');
         continue;
       }
       item.score = scoreOf(item, query, db, now);
@@ -572,7 +575,7 @@ export async function retrieve(
   for (const row of cacheRows) {
     const item = rowToItem(row, 'memory');
     if (!sharedWith(item, query) || given.has(`memory:${item.id}`)) {
-      note(item, given.has(`memory:${item.id}`) ? 'given' : 'no-share');
+      note('cache', item, given.has(`memory:${item.id}`) ? 'given' : 'no-share');
       continue;
     }
     item.score = scoreOf(item, query, db, now) || 1;
@@ -604,7 +607,7 @@ export async function retrieve(
     for (const row of rows) {
       const item = rowToItem(row, 'memory');
       if (given.has(`memory:${item.id}`)) {
-        note(item, 'given');
+        note('anchor', item, 'given');
         continue;
       }
       item.score = scoreOf(item, query, db, now);
@@ -618,16 +621,25 @@ export async function retrieve(
   // Ollama 不在就跳过，不解释、不报错——降级回下面的词面弱匹配。
   // why 写明是向量，别让它冒充锚点。
   const vectorRan = hits.length < MAX_HITS && vector && Date.now() > vectorCooldownUntil;
-  if (vectorRan) ran('vector');
-  else if (hits.length >= MAX_HITS) skipped('vector', 'budget-full');
-  else if (!vector) skipped('vector', 'off');
-  else skipped('vector', 'cooldown');
+  if (!vectorRan) {
+    if (hits.length >= MAX_HITS) skipped('vector', 'budget-full');
+    else if (!vector) skipped('vector', 'off');
+    else skipped('vector', 'cooldown');
+  }
   if (vectorRan) {
+    // ran 只说明「轮到它了」，不说明它真跑成了：Ollama 没起的时候这一层
+    // 什么都没检到，日志里却写 ran——将来拿这本账量向量召回，会读成「跑了
+    // 但没效果」。先记 attempted，走完再改成 completed / failed。
+    let vectorStatus = 'attempted';
+    let vectorReason = '';
     try {
       const endpoint = (
         process.env.DSH_MEMORY_CORE_OLLAMA || DEFAULT_ENDPOINT
-      ).replace(/\/+$/, '');
-      if (await endpointReady(endpoint)) {
+      ).replace(/\\+$/, '');
+      if (!(await endpointReady(endpoint))) {
+        vectorStatus = 'failed';
+        vectorReason = 'endpoint-down';
+      } else {
         const model = process.env.DSH_MEMORY_CORE_EMBED_MODEL || DEFAULT_MODEL;
         const probe = await embedText(query.text, { model, endpoint, timeoutMs: 2500 });
         for (const candidate of nearestByVector(db, probe, { model, limit: 3 })) {
@@ -636,6 +648,7 @@ export async function retrieve(
           // 所以宁可偏宽一点，让它在门内有一次机会。
           if (candidate.score < 0.55) {
             note(
+              'vector',
               { id: candidate.memory_id, source: 'memory', section: 'vector', score: candidate.score },
               'low-vector',
             );
@@ -654,14 +667,19 @@ export async function retrieve(
           item.score = candidate.score;
           item.why = `这一轮锚点/实体没补满两条；这条语义相近（${candidate.score.toFixed(3)}）。`;
           push(item);
+          vectorStatus = 'completed';
           break;
         }
+        if (vectorStatus === 'attempted') vectorStatus = 'completed';
       }
     } catch {
       // Ollama 掉了、模型没拉、超时——都退回词面匹配，别让检索拖垮这一轮。
       // 冷却一分钟，别让每轮都再等一次。
+      vectorStatus = 'failed';
+      vectorReason = 'error';
       vectorCooldownUntil = Date.now() + 60_000;
     }
+    layers.push({ name: 'vector', ran: true, status: vectorStatus, reason: vectorReason });
   }
 
   // L2.5: 弱匹配。锚点、实体抽不出东西（或抽出了、前面的层没对上）时，
@@ -742,7 +760,7 @@ export async function retrieve(
           others.length > 0 &&
           others.every((df) => df >= minDf * 2);
         if (score <= 0 || (hits < Math.min(2, terms.length) && !rare)) {
-          note(item, 'low-weak');
+          note('weak', item, 'low-weak');
           continue;
         }
         item.section = 'weak';
@@ -832,26 +850,26 @@ export async function retrieve(
   let chars = 0;
   for (const hit of ordered) {
     if (picked.length >= MAX_HITS) {
-      note(hit, 'budget');
+      note('pack', hit, 'budget');
       continue;
     }
     if (hit.section === 'people' && sectionCount.people >= 1) {
-      note(hit, 'section-cap');
+      note('pack', hit, 'section-cap');
       continue;
     }
     if (hit.section === 'tools' && sectionCount.tools >= 1) {
-      note(hit, 'section-cap');
+      note('pack', hit, 'section-cap');
       continue;
     }
     // 同一句提问引出的多条记忆只留最新一条，否则注入的是同一个问题的几个不同答案。
     const summary = String(hit.summary ?? '');
     const key = summary.startsWith('问：') ? summary.split('｜答：')[0] : summary.slice(0, 40);
     if (seenAsks.has(key)) {
-      note(hit, 'duplicate');
+      note('pack', hit, 'duplicate');
       continue;
     }
     if (chars + summary.length > MAX_CHARS) {
-      note(hit, 'chars');
+      note('pack', hit, 'chars');
       continue;
     }
     if (hit.section === 'people' || hit.section === 'tools') sectionCount[hit.section] += 1;
