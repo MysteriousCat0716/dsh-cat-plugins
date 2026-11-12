@@ -640,17 +640,20 @@ export async function retrieve(
       const endpoint = (
         process.env.DSH_MEMORY_CORE_OLLAMA || DEFAULT_ENDPOINT
       ).replace(/\\+$/, '');
-      if (!(await endpointReady(endpoint))) {
+      const backend = process.env.DSH_MEMORY_CORE_EMBED_BACKEND || 'ollama';
+      if (backend !== 'cloudflare' && !(await endpointReady(endpoint))) {
         vectorStatus = 'failed';
         vectorReason = 'endpoint-down';
       } else {
         const model = process.env.DSH_MEMORY_CORE_EMBED_MODEL || DEFAULT_MODEL;
+        const vectorLimit = Number(process.env.DSH_MEMORY_CORE_VECTOR_LIMIT || 3);
+        const vectorMin = Number(process.env.DSH_MEMORY_CORE_VECTOR_MIN || 0.55);
         const probe = await embedText(query.text, { model, endpoint, timeoutMs: 2500 });
-        for (const candidate of nearestByVector(db, probe, { model, limit: 3 })) {
+        for (const candidate of nearestByVector(db, probe, { model, limit: vectorLimit })) {
           // 0.55 不是拍的：真实库里「考研还剩多久」对毕设那条是 0.568，
           // 卡 0.6 会把它挡掉；再低就只剩「都像」的噪音。最多取一条，
           // 所以宁可偏宽一点，让它在门内有一次机会。
-          if (candidate.score < 0.55) {
+          if (candidate.score < vectorMin) {
             note(
               'vector',
               { id: candidate.memory_id, source: 'memory', section: 'vector', score: candidate.score },

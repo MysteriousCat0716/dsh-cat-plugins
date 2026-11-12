@@ -12,6 +12,7 @@
  */
 
 import net from 'node:net';
+import { embedTextCloudflare, CLOUDFLARE_MODEL } from './embed-cf.js';
 
 export const DEFAULT_MODEL = 'qwen3-embedding:0.6b';
 export const DEFAULT_ENDPOINT = 'http://127.0.0.1:11434';
@@ -139,8 +140,14 @@ export function pendingEmbeddings(db, model = DEFAULT_MODEL) {
  * @returns {Promise<number[]>}
  */
 export async function embedText(text, options = {}) {
+  const backend = process.env.DSH_MEMORY_CORE_EMBED_BACKEND || 'ollama';
   const model =
-    options.model || process.env.DSH_MEMORY_CORE_EMBED_MODEL || DEFAULT_MODEL;
+    options.model ||
+    process.env.DSH_MEMORY_CORE_EMBED_MODEL ||
+    (backend === 'cloudflare' ? CLOUDFLARE_MODEL : DEFAULT_MODEL);
+  if (backend === 'cloudflare') {
+    return embedTextCloudflare(text, { model, timeoutMs: options.timeoutMs });
+  }
   const endpoint = (
     options.endpoint ||
     process.env.DSH_MEMORY_CORE_OLLAMA ||
