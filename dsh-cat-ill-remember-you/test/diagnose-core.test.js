@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { openStore } from '../lib/db.js';
-import { retrieve } from '../lib/recall.js';
+import { retrieve, MAX_HITS } from '../lib/recall.js';
 import { classify } from '../tools/diagnose-core.mjs';
 
 // 单元测试不依赖本机 Ollama。
@@ -47,9 +47,10 @@ test('落选账带 layer：retrieve 的每一笔都标了来源层', async () =>
 
 test('弱匹配被预算挡住时记 budget-full，诊断报 SKIPPED', async () => {
   const db = openStore(':memory:');
-  // 两条共享同一锚点，L1/L2 一上来就填满 MAX_HITS=2，轮不到弱匹配。
-  insertMemory(db, { summary: '笔记一', text: '缓存的问题一', anchors: '["lib/recall.js"]', t: 1001 });
-  insertMemory(db, { summary: '笔记二', text: '缓存的问题二', anchors: '["lib/recall.js"]', t: 1002 });
+  // MAX_HITS 条共享同一锚点，L1/L2 一上来就把名额填满，轮不到弱匹配。
+  for (let i = 1; i <= MAX_HITS; i += 1) {
+    insertMemory(db, { summary: `笔记${i}`, text: `缓存的问题${i}`, anchors: '["lib/recall.js"]', t: 1000 + i });
+  }
   const hits = await retrieve(db, { text: 'lib/recall.js 的缓存', now: 9000 });
   const weak = (hits.layers || []).find((l) => l.name === 'weak');
   assert.ok(weak && !weak.ran, `弱匹配应被跳过：${JSON.stringify(hits.layers)}`);

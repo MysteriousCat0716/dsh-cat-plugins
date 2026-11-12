@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { openStore } from '../lib/db.js';
-import { retrieve, markRecallUsed } from '../lib/recall.js';
+import { retrieve, markRecallUsed, MAX_HITS } from '../lib/recall.js';
 
 // 单元测试不依赖本机 Ollama。
 process.env.DSH_MEMORY_CORE_VECTOR = 'off';
@@ -16,7 +16,7 @@ function insertMemory(db, { summary, text, anchors, t }) {
 
 test('recall trace: 名额满了以后，后面的候选记 budget', async () => {
   const db = openStore(':memory:');
-  for (let i = 1; i <= 4; i += 1) {
+  for (let i = 1; i <= MAX_HITS + 2; i += 1) {
     insertMemory(db, {
       summary: `lib/recall.js 的第 ${i} 条笔记`,
       text: `lib/recall.js 的第 ${i} 条笔记，内容不同。`,
@@ -25,7 +25,7 @@ test('recall trace: 名额满了以后，后面的候选记 budget', async () =>
     });
   }
   const hits = await retrieve(db, { text: 'lib/recall.js 现在怎么改', recent: [], now: 9000 });
-  assert.equal(hits.length, 2);
+  assert.equal(hits.length, MAX_HITS);
   assert.ok(Array.isArray(hits.trace));
   assert.ok(
     hits.trace.some((item) => item.reason === 'budget'),

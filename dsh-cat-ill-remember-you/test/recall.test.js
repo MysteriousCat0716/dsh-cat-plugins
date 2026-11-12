@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { openStore, insertTurn } from '../lib/db.js';
-import { queryOf, knownOf, retrieve, renderHint, markRecallUsed, weakTerms } from '../lib/recall.js';
+import { queryOf, knownOf, retrieve, renderHint, markRecallUsed, weakTerms, MAX_HITS } from '../lib/recall.js';
 
 // 单元测试不依赖本机 Ollama：向量路径关闭，纯函数在 embed.test.js 里测。
 process.env.DSH_MEMORY_CORE_VECTOR = 'off';
@@ -194,17 +194,17 @@ test('retrieve: L3 does not inject the current message as a past turn', async ()
   assert.equal(hits.filter((hit) => hit.source === 'turn').length, 0);
 });
 
-test('retrieve: caps hits at two', async () => {
+test('retrieve: caps hits at MAX_HITS', async () => {
   const db = openStore(':memory:');
   const stmt = db.prepare(
     `INSERT INTO memories (kind, text, summary, entities, anchors, tier, t)
      VALUES ('fact', ?, ?, '[]', ?, 'active', ?)`,
   );
-  for (let i = 0; i < 3; i += 1) {
+  for (let i = 0; i < MAX_HITS * 2; i += 1) {
     stmt.run(`缓存第 ${i} 条的结论`, `缓存第 ${i} 条`, JSON.stringify(['产出/插件/foo.js']), 1000 + i);
   }
   const hits = await retrieve(db, { text: '产出/插件/foo.js 还要改吗', recent: [] });
-  assert.equal(hits.length, 2);
+  assert.equal(hits.length, MAX_HITS);
 });
 
 test('retrieve: one question with several answers keeps only the newest', async () => {
@@ -238,6 +238,24 @@ test('retrieve: memories from an IM channel are not injected', async () => {
   const hits = await retrieve(db, { text: '产出/插件/foo.js 还要改吗', recent: [] });
   assert.equal(hits.length, 1);
   assert.equal(hits[0].summary, '缓存层要换掉');
+  db.close();
+});
+
+test('retrieve: manual 记忆必须可见（手工写入的关键事实不能被 origin 过滤掉）', async () => {
+  const db = makeDb();
+  // 2026-11-12：core.db 里 19 条 origin='manual' 的记忆（remember 写进去的关键事实，
+  // 比如生日、会话日志只留 4 天）此前被所有检索 SQL 的 origin IN ('chat','unknown')
+  // 排除在外——库里明明有，问起来永远捞不到。这条钉住它。
+  db.prepare(
+    `INSERT INTO memories (kind, origin, text, summary, entities, anchors, why, tier, t)
+     VALUES ('fact', 'manual', '猫的生日是公历 7 月 16 日', '猫的生日 7 月 16 日', '[]', '[]', 'remember：生日', 'active', 2000)`,
+  ).run();
+
+  const hits = await retrieve(db, { text: '我的生日是哪天', recent: [] });
+  assert.ok(
+    hits.some((hit) => hit.summary === '猫的生日 7 月 16 日'),
+    'origin=manual 的记忆应该进候选，实际没进',
+  );
   db.close();
 });
 
@@ -318,7 +336,7 @@ test('sections: people and tools each take at most one of the two slots', async 
   const hits = await retrieve(db, { text: '产出/插件/foo.js 猫之前说的那个坑还记得吗', recent: [] });
   assert.ok(hits.filter((hit) => hit.section === 'people').length <= 1);
   assert.ok(hits.filter((hit) => hit.section === 'tools').length <= 1);
-  assert.ok(hits.length <= 2);
+  assert.ok(hits.length <= MAX_HITS);
   db.close();
 });
 
@@ -480,9 +498,9 @@ test('retrieve: 弱匹配按稀有词选，不按新旧选', async () => {
     recent: [],
     now: 5000,
   });
-  // 弱匹配层现在可以交多条候选参与排序（不再只兜一条），最终仍受 2 条预算限制；
+  // 弱匹配层现在可以交多条候选参与排序（不再只兜一条），最终仍受 MAX_HITS 预算限制；
   // 判据是「稀有词那条排第一」，不是「只回一条」。
-  assert.ok(hits.length <= 2);
+  assert.ok(hits.length <= MAX_HITS);
   assert.equal(hits[0].summary, '幂等操作');
   db.close();
 });

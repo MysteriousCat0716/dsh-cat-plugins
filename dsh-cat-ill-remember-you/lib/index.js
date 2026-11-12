@@ -907,7 +907,8 @@ export function apply(ctx) {
             }
           }
           // A hit that was actually injected counts as "used": without this,
-          // forgetSweep would demote a memory that is read every day after 30 days.
+          // forgetSweep would demote a memory that is read every day once its
+          // current interval (21/32/47/… days) runs out.
           try {
             const ids = hits.filter((hit) => hit.source === 'memory').map((hit) => hit.id);
             if (ids.length > 0) {

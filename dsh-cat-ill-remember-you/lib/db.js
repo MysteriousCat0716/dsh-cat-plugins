@@ -249,6 +249,11 @@ export function openStore(file = DEFAULT_DB_FILE) {
     ensureColumn(db, 'memories', 'supersedes', 'INTEGER');
     ensureColumn(db, 'memories', 'rule_ver', "TEXT NOT NULL DEFAULT 'r0'");
     ensureColumn(db, 'memories', 'mentions', 'INTEGER NOT NULL DEFAULT 1');
+    // 衰减：forget_n = 已经降过几次级（间隔按 1.5^n 递增），forget_at = 上一次
+    // 降级的时刻——下一段间隔从那一刻起算，而不是从写入时间。没有 forget_at
+    // 的话，一条沉睡了两年的记忆一进 dormant 就会立刻被判成 cold。
+    ensureColumn(db, 'memories', 'forget_n', 'INTEGER NOT NULL DEFAULT 0');
+    ensureColumn(db, 'memories', 'forget_at', 'INTEGER');
     ensureColumn(db, 'turns', 'scanned_at', 'INTEGER NOT NULL DEFAULT 0');
     ensureColumn(db, 'turns', 'cwd', "TEXT NOT NULL DEFAULT ''");
     // 只记落选的账本量不出「每层各贡献了几条」：picked 的 section 也落一行。

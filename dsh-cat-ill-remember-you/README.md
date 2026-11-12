@@ -52,13 +52,15 @@
 
 `node tools/eval-recall.mjs [--limit 200] [--verbose]`：拿 `recall_log` 里 `used=1` 的真实轮次回放，量「曾经找回来的东西现在还找不找得到」。这是回归基线，不是绝对正确率——账本只记了当时注入了什么，没记当时漏了什么。
 
+`node tools/eval-extract.mjs`：评测集候选抽取（只读，`readOnly` 打开）。从 `turns` 抽真实提问、从 `supersedes` 拉多跳链、从 `recall_log` 的 `used=0` 捞失败反推，写到 `evals/work/candidates.json`，人工挑 40 条用。11-08 那版 12 条冻结在 `evals/v0/`，原件不动。
+
 ## 跑测试
 
 ```bash
 for f in test/*.test.js; do node "$f"; done
 ```
 
-211 条；单元测试用内存库，pre-step 集成测试用临时文件库（跑完删除），都不碰真实数据。`node --test test/` 在部分 Windows 沙箱里会给每个文件起子进程、报 `spawn EPERM`，所以逐文件跑。
+267 条；单元测试用内存库，pre-step 集成测试用临时文件库（跑完删除），都不碰真实数据。`node --test test/` 在部分 Windows 沙箱里会给每个文件起子进程、报 `spawn EPERM`，所以逐文件跑。
 
 ## 环境变量
 

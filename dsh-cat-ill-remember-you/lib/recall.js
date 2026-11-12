@@ -22,7 +22,7 @@ import { reviveOnRecall } from './forget.js';
 import { expandTerms } from './aliases.js';
 
 const REFERRAL = /(之前|上次|上回|那个|这个|这句|这份|这条|这段|那件|那事|还说过|刚才|前面|说过|提过|记得|上一条|刚刚)/;
-const MAX_HITS = 2;
+export const MAX_HITS = 6;
 const MAX_CHARS = 600;
 const TURN_WINDOW_MS = 30 * 24 * 3600 * 1000;
 const CACHE_SIZE = 3;
@@ -185,7 +185,7 @@ export function weakCandidatePool(db, all, limit = 200) {
   return db
     .prepare(
       `SELECT id, kind, summary, text, entities, anchors, t, mentions, confidence, retention
-         FROM memories WHERE tier='active' AND origin IN ('chat','unknown')
+         FROM memories WHERE tier='active' AND origin IN ('chat','unknown','manual')
            AND (${like}) ORDER BY (${overlap}) DESC, t DESC LIMIT ${Number(limit) || 200}`,
     )
     .all(...values, ...values)
@@ -512,7 +512,7 @@ export async function retrieve(
     const rows = db
       .prepare(
         `SELECT id, kind, summary, text, entities, anchors, t, mentions, confidence, retention FROM memories
-         WHERE tier = 'active' AND origin IN ('chat', 'unknown')
+         WHERE tier = 'active' AND origin IN ('chat', 'unknown', 'manual')
            AND EXISTS (SELECT 1 FROM json_each(memories.entities) WHERE json_each.value IN (${marks}))
          ORDER BY t DESC LIMIT 6`,
       )
@@ -543,7 +543,7 @@ export async function retrieve(
     const rows = db
       .prepare(
         `SELECT id, kind, summary, text, entities, anchors, t, mentions, confidence, retention FROM memories
-         WHERE tier = 'active' AND origin IN ('chat', 'unknown')
+         WHERE tier = 'active' AND origin IN ('chat', 'unknown', 'manual')
            AND EXISTS (SELECT 1 FROM json_each(memories.anchors) WHERE json_each.value IN (${marks}))
          ORDER BY t DESC LIMIT 6`,
       )
@@ -571,7 +571,7 @@ export async function retrieve(
   const cacheRows = db
     .prepare(
       `SELECT id, kind, summary, text, entities, anchors, t, mentions, confidence, retention FROM memories
-       WHERE tier = 'active' AND origin IN ('chat', 'unknown') ORDER BY t DESC LIMIT ?`,
+       WHERE tier = 'active' AND origin IN ('chat', 'unknown', 'manual') ORDER BY t DESC LIMIT ?`,
     )
     .all(CACHE_SIZE);
   for (const row of cacheRows) {
@@ -602,7 +602,7 @@ export async function retrieve(
     const rows = db
       .prepare(
         `SELECT id, kind, summary, text, entities, anchors, t, mentions, confidence, retention FROM memories
-         WHERE tier IN ('active','dormant') AND origin IN ('chat', 'unknown') AND (${clauses.join(' OR ')})
+         WHERE tier IN ('active','dormant') AND origin IN ('chat', 'unknown', 'manual') AND (${clauses.join(' OR ')})
          ORDER BY t DESC LIMIT 24`,
       )
       .all(...params);
@@ -661,7 +661,7 @@ export async function retrieve(
           const row = db
             .prepare(
               `SELECT id, kind, summary, text, entities, anchors, t, mentions, confidence, retention FROM memories
-               WHERE id = ? AND tier IN ('active','dormant') AND origin IN ('chat', 'unknown')`,
+               WHERE id = ? AND tier IN ('active','dormant') AND origin IN ('chat', 'unknown', 'manual')`,
             )
             .get(candidate.memory_id);
           if (!row) continue;
@@ -706,12 +706,12 @@ export async function retrieve(
       // df 必须和 stats 用同一个语料范围，否则 df 可能大于 N，
       // IDF 变成负数，本该召回的那条被 score<=0 直接丢掉。
       const countStmt = db.prepare(
-        "SELECT count(*) AS c FROM memories WHERE tier = 'active' AND origin IN ('chat', 'unknown') AND text LIKE ? ESCAPE '\\'",
+        "SELECT count(*) AS c FROM memories WHERE tier = 'active' AND origin IN ('chat', 'unknown', 'manual') AND text LIKE ? ESCAPE '\\'",
       );
       const weightOf = new Map();
       const stats = db
         .prepare(
-          "SELECT count(*) AS n, avg(length(text)) AS avg FROM memories WHERE tier = 'active' AND origin IN ('chat', 'unknown')",
+          "SELECT count(*) AS n, avg(length(text)) AS avg FROM memories WHERE tier = 'active' AND origin IN ('chat', 'unknown', 'manual')",
         )
         .get();
       const idfOf = (term) => {

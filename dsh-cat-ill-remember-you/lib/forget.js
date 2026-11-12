@@ -2,7 +2,11 @@
  * M4 · 遗忘
  *
  * 只降 tier，不删行。判据是可数的时间，不是模型判断：
- *   active  --30 天没被用过-->  dormant  --再过 60 天-->  cold
+ *   active --21 天没被用过--> dormant --再 32 天--> cold
+ * 每降一级，下一段间隔乘 1.5（21, 32, 47, 71, 106, 159），最多撑到 159 天。
+ * 这是「越久没想起，越可能真的忘」的近似：刚放下的 21 天就会沉，沉过之后
+ * 反而能睡更久。旧实现是固定的 30/90 天，一条记忆在第 30 天被一刀切掉，
+ * 跟它之前被想起过几次无关。
  *
  * decision / preference 不参与自动降级：这两类变化慢，误降一次就要重新学。
  * 每次降级写 forget_log，tier 可以手动改回去——遗忘是可回退的降级，不是删除。
@@ -21,6 +25,12 @@ const STICKY_KINDS = new Set(['decision', 'preference']);
 export const EPHEMERAL_DORMANT_MS = 7 * DAY_MS;
 export const EPHEMERAL_COLD_MS = 7 * DAY_MS;
 
+/** 衰减曲线：第 n 次降级要等多少天（n 从 0 起，封顶 159 天）。 */
+export function intervalDays(n) {
+  const k = Math.max(0, Math.min(5, Math.floor(Number(n) || 0)));
+  return Math.round(21 * 1.5 ** k);
+}
+
 /**
  * 「真的用上了」才算活着。
  *
@@ -30,26 +40,34 @@ export const EPHEMERAL_COLD_MS = 7 * DAY_MS;
  * 旧判据是「被取回过」：取回一次 age 就重置，一条从没被用到的记忆可以靠
  * 反复被取回一直活着。人不是这样——想起来了但没用上，等于没想起来。
  * 现在只用 recall_log 里 used=1 的最近时间；没有就退回写入时间。
+ *
+ * forget_at 是上一次降级的时刻：它保证每降一级就重新计时，否则 age 一直从
+ * 写入时间算，刚进 dormant 的记忆会立刻满足下一级条件。
  */
 function lastEffective(row, usedAt) {
   const used = usedAt.get(Number(row.id)) ?? 0;
-  return Math.max(used, Number(row.t ?? 0));
+  const written = Number(row.t ?? 0);
+  const demoted = Number(row.forget_at) || 0;
+  return Math.max(used, written, demoted);
 }
 
 /**
  * Sweep one store: demote old, unused memories.
  * @param {import('node:sqlite').DatabaseSync} db
  * @param {{now?: number, dormantAfterMs?: number, coldAfterMs?: number}} [opts]
+ *   dormantAfterMs / coldAfterMs 是 0.9.x 的旧参数，只在显式传入时覆盖默认
+ *   曲线；不传就走 intervalDays。
  * @returns {{demoted: number, dormant: number, cold: number}}
  */
 export function forgetSweep(db, opts = {}) {
   const now = Number(opts.now ?? Date.now());
-  const dormantAfterMs = Number(opts.dormantAfterMs ?? 30 * DAY_MS);
-  const coldAfterMs = Number(opts.coldAfterMs ?? 60 * DAY_MS);
+  const fixedDormant = Number.isFinite(opts.dormantAfterMs) ? Number(opts.dormantAfterMs) : null;
+  const fixedCold = Number.isFinite(opts.coldAfterMs) ? Number(opts.coldAfterMs) : null;
 
   const rows = db
     .prepare(
-      "SELECT id, kind, tier, retention, t, last_used FROM memories WHERE tier IN ('active','dormant')",
+      `SELECT id, kind, tier, retention, t, last_used, forget_n, forget_at
+         FROM memories WHERE tier IN ('active','dormant')`,
     )
     .all();
 
@@ -72,6 +90,7 @@ export function forgetSweep(db, opts = {}) {
 
   const markDormant = db.prepare("UPDATE memories SET tier = 'dormant' WHERE id = ?");
   const markCold = db.prepare("UPDATE memories SET tier = 'cold' WHERE id = ?");
+  const stamp = db.prepare('UPDATE memories SET forget_n = ?, forget_at = ? WHERE id = ?');
   const log = db.prepare(
     'INSERT INTO forget_log (memory_id, at, reason, tier_before, tier_after) VALUES (?, ?, ?, ?, ?)',
   );
@@ -83,15 +102,27 @@ export function forgetSweep(db, opts = {}) {
   db.exec('BEGIN IMMEDIATE');
   try {
     for (const row of rows) {
-      // 显式 permanent 永不降级；ephemeral 走短曲线；auto 走默认曲线。
+      // 显式 permanent 永不降级；ephemeral 走短曲线；auto 走递增曲线。
       if (row.retention === 'permanent') continue;
       const ephemeral = row.retention === 'ephemeral';
       if (!ephemeral && STICKY_KINDS.has(row.kind)) continue;
+
+      const n = Number(row.forget_n) || 0;
       const age = now - lastEffective(row, usedAt);
-      const dormantAt = ephemeral ? EPHEMERAL_DORMANT_MS : dormantAfterMs;
-      const coldAt = dormantAt + (ephemeral ? EPHEMERAL_COLD_MS : coldAfterMs);
-      if (row.tier === TIER_ACTIVE && age >= dormantAt) {
+      let gapMs;
+      if (ephemeral) {
+        gapMs = row.tier === TIER_ACTIVE ? EPHEMERAL_DORMANT_MS : EPHEMERAL_COLD_MS;
+      } else if (row.tier === TIER_ACTIVE && fixedDormant !== null) {
+        gapMs = fixedDormant;
+      } else if (row.tier === TIER_DORMANT && fixedCold !== null) {
+        gapMs = fixedCold;
+      } else {
+        gapMs = intervalDays(n) * DAY_MS;
+      }
+
+      if (row.tier === TIER_ACTIVE && age >= gapMs) {
         markDormant.run(row.id);
+        stamp.run(n + 1, now, row.id);
         log.run(
           row.id,
           now,
@@ -100,8 +131,9 @@ export function forgetSweep(db, opts = {}) {
           TIER_DORMANT,
         );
         dormant += 1;
-      } else if (row.tier === TIER_DORMANT && age >= coldAt) {
+      } else if (row.tier === TIER_DORMANT && age >= gapMs) {
         markCold.run(row.id);
+        stamp.run(n + 1, now, row.id);
         log.run(
           row.id,
           now,
@@ -131,6 +163,9 @@ export function forgetSweep(db, opts = {}) {
  * 遗忘是可回退的降级，不是删除——但旧实现只有降没有升，沉下去的记忆
  * 就再也浮不上来（召回又只查 active，等于单向门）。
  * 只处理 dormant：cold 是「几乎不再想起」，要回来得靠手动。
+ *
+ * 回升同时把 forget_n 减一：被想起一次，下次的间隔就退回去一档，
+ * 相当于「这条还没忘干净」。减到 0 为止，不会变成负数。
  * @param {import('node:sqlite').DatabaseSync} db
  * @param {number[]} ids
  * @returns {number} 回升条数
@@ -144,7 +179,13 @@ export function reviveOnRecall(db, ids) {
     .all(...unique);
   if (rows.length === 0) return 0;
   const now = Date.now();
-  const revive = db.prepare("UPDATE memories SET tier = 'active', last_used = ? WHERE id = ?");
+  const revive = db.prepare(
+    `UPDATE memories
+        SET tier = 'active', last_used = ?,
+            forget_n = CASE WHEN forget_n > 0 THEN forget_n - 1 ELSE 0 END,
+            forget_at = ?
+      WHERE id = ?`,
+  );
   const log = db.prepare(
     'INSERT INTO forget_log (memory_id, at, reason, tier_before, tier_after) VALUES (?, ?, ?, ?, ?)',
   );
@@ -153,7 +194,7 @@ export function reviveOnRecall(db, ids) {
   db.exec('BEGIN IMMEDIATE');
   try {
     for (const row of rows) {
-      revive.run(now, row.id);
+      revive.run(now, now, row.id);
       log.run(row.id, now, 'recalled', 'dormant', 'active');
     }
     db.exec('COMMIT');
