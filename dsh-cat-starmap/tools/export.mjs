@@ -121,7 +121,12 @@ function toStar(row, now, clusterTotals, clusterSeen) {
   const lastSeen = Number(row.last_used) || Number(row.t) || now
   const days = Math.max(0, (now - lastSeen) / DAY)
   const decay = Math.exp(-days / halfLifeDays)
-  const retention = Number(Math.min(1, Math.max(0.05, decay * (0.65 + 0.35 * importance))).toFixed(4))
+  // tier 是遗忘系统给出的「已经沉下去」的判断；单看天数看不出来——一条
+  // 刚降级的记忆可能才 8 天，按天数还亮着，但它其实已经沉了。
+  const tierDim = row.tier === 'cold' ? 0.12 : row.tier === 'dormant' ? 0.4 : 1
+  const retention = Number(
+    Math.min(1, Math.max(0.05, decay * (0.65 + 0.35 * importance) * tierDim)).toFixed(4),
+  )
 
   const index = clusterSeen[kind]
   clusterSeen[kind] += 1
@@ -137,7 +142,7 @@ function toStar(row, now, clusterTotals, clusterSeen) {
     detail: full.slice(0, 1200),
     tags: (JSON.parse(row.entities || '[]')).slice(0, 4),
     source: kind,
-    band: days > 30 ? '冷' : days > 7 ? '温' : '热',
+    band: row.tier === 'dormant' || row.tier === 'cold' ? '冷' : days > 30 ? '冷' : days > 7 ? '温' : '热',
     halfLifeDays,
     importance: Number(importance.toFixed(3)),
     mentions,
