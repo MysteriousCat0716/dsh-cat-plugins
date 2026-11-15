@@ -31,6 +31,22 @@ export function vectorsEnabled() {
   return process.env.DSH_MEMORY_CORE_VECTOR === 'on';
 }
 
+/**
+ * 当前后端的模型名：显式 override > DSH_MEMORY_CORE_EMBED_MODEL > 后端默认。
+ *
+ * 这层存在是因为 recall.js 曾经直接拿 DEFAULT_MODEL 兜底：只把
+ * BACKEND 切成 cloudflare、没设 MODEL 时，会把 `qwen3-embedding:0.6b`
+ * 发给 Cloudflare，必然失败，而且失败信息看不出是模型名错了。
+ * 所有「用哪个模型查/存」的地方都走这里，免得再写死一次。
+ */
+export function activeEmbedModel(override) {
+  if (override) return override;
+  const fromEnv = process.env.DSH_MEMORY_CORE_EMBED_MODEL;
+  if (fromEnv) return fromEnv;
+  const backend = process.env.DSH_MEMORY_CORE_EMBED_BACKEND || 'ollama';
+  return backend === 'cloudflare' ? CLOUDFLARE_MODEL : DEFAULT_MODEL;
+}
+
 function positive(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? number : fallback;
@@ -49,8 +65,8 @@ function toBlob(vector) {
  * @returns {Promise<{embedded:number, model:string, dim?:number}>}
  */
 export async function embedPending(db, options = {}) {
-  const model =
-    options.model || process.env.DSH_MEMORY_CORE_EMBED_MODEL || DEFAULT_MODEL;
+  const model = activeEmbedModel(options.model);
+  const backend = process.env.DSH_MEMORY_CORE_EMBED_BACKEND || 'ollama';
   const endpoint = (
     options.endpoint ||
     process.env.DSH_MEMORY_CORE_OLLAMA ||
@@ -64,42 +80,69 @@ export async function embedPending(db, options = {}) {
     .prepare(
       `SELECT m.id, m.summary, m.text FROM memories m
        LEFT JOIN embeddings e ON e.memory_id = m.id AND e.model = ?
-       WHERE e.id IS NULL AND m.tier = 'active'
+       WHERE e.id IS NULL AND m.tier IN ('active','dormant')
        ORDER BY m.t DESC LIMIT ?`,
     )
     .all(model, limit);
   if (rows.length === 0) return { embedded: 0, model };
 
-  const response = await fetch(`${endpoint}/api/embed`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      model,
-      input: rows.map((row) => row.summary || row.text),
-    }),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  if (!response.ok) {
-    throw new Error(`ollama /api/embed ${response.status} ${response.statusText}`);
+  let vectors;
+  let failed = 0;
+  if (backend === 'cloudflare') {
+    // bge-m3 的 Workers AI 接口按条返回；一次失败不该把整批打回，逐条取。
+    // 单条超时/限流就记 null 跳过，下一轮回填还会再遇到它——整批抛错的话，
+    // 已经成功的那十几条也一起白费了（2026-11-15 回填就是这样停在 688/1580）。
+    vectors = [];
+    for (const row of rows) {
+      try {
+        vectors.push(
+          await embedTextCloudflare(row.summary || row.text, {
+            model,
+            timeoutMs: Math.min(timeoutMs, 10_000),
+          }),
+        );
+      } catch {
+        failed += 1;
+        vectors.push(null);
+      }
+    }
+  } else {
+    const response = await fetch(`${endpoint}/api/embed`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        input: rows.map((row) => row.summary || row.text),
+      }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!response.ok) {
+      throw new Error(`ollama /api/embed ${response.status} ${response.statusText}`);
+    }
+    const payload = await response.json();
+    vectors = Array.isArray(payload?.embeddings) ? payload.embeddings : null;
   }
-  const payload = await response.json();
-  const vectors = Array.isArray(payload?.embeddings) ? payload.embeddings : null;
   if (!vectors || vectors.length !== rows.length) {
     throw new Error(
-      `ollama /api/embed returned ${vectors ? vectors.length : 'no'} vectors for ${rows.length} inputs`,
+      `${backend} returned ${vectors ? vectors.length : 'no'} vectors for ${rows.length} inputs`,
     );
   }
 
   // Validate every vector before opening the transaction: a half-written batch
   // would need a manual cleanup, and the next sweep would skip those rows.
-  for (const vector of vectors) {
+  // null 是这一轮没取到的条目，跳过但不中止整批。
+  const good = vectors.filter((vector) => vector !== null && vector !== undefined);
+  for (const vector of good) {
     if (!Array.isArray(vector) || vector.length === 0) {
-      throw new Error('ollama /api/embed returned an empty vector');
+      throw new Error(`${backend} returned an empty vector`);
     }
   }
-  const dim = vectors[0].length;
-  if (vectors.some((vector) => vector.length !== dim)) {
-    throw new Error('ollama /api/embed returned vectors of different dimensions');
+  if (good.length === 0) {
+    throw new Error(`${backend} returned no usable vector for ${rows.length} inputs`);
+  }
+  const dim = good[0].length;
+  if (good.some((vector) => vector.length !== dim)) {
+    throw new Error(`${backend} returned vectors of different dimensions`);
   }
 
   const insert = db.prepare(
@@ -109,6 +152,7 @@ export async function embedPending(db, options = {}) {
   db.exec('BEGIN');
   try {
     for (let i = 0; i < rows.length; i += 1) {
+      if (!vectors[i]) continue;
       insert.run(rows[i].id, model, dim, toBlob(vectors[i]), now);
     }
     db.exec('COMMIT');
@@ -116,16 +160,16 @@ export async function embedPending(db, options = {}) {
     db.exec('ROLLBACK');
     throw error;
   }
-  return { embedded: rows.length, model, dim };
+  return { embedded: rows.length - failed, failed, model, dim };
 }
 
-/** How many active memories still have no vector for `model`. */
-export function pendingEmbeddings(db, model = DEFAULT_MODEL) {
+/** How many memories (active + dormant) still have no vector for the active model. */
+export function pendingEmbeddings(db, model = activeEmbedModel()) {
   const row = db
     .prepare(
       `SELECT COUNT(*) AS n FROM memories m
        LEFT JOIN embeddings e ON e.memory_id = m.id AND e.model = ?
-       WHERE e.id IS NULL AND m.tier = 'active'`,
+       WHERE e.id IS NULL AND m.tier IN ('active','dormant')`,
     )
     .get(model);
   return Number(row?.n ?? 0);
@@ -141,10 +185,7 @@ export function pendingEmbeddings(db, model = DEFAULT_MODEL) {
  */
 export async function embedText(text, options = {}) {
   const backend = process.env.DSH_MEMORY_CORE_EMBED_BACKEND || 'ollama';
-  const model =
-    options.model ||
-    process.env.DSH_MEMORY_CORE_EMBED_MODEL ||
-    (backend === 'cloudflare' ? CLOUDFLARE_MODEL : DEFAULT_MODEL);
+  const model = activeEmbedModel(options.model);
   if (backend === 'cloudflare') {
     return embedTextCloudflare(text, { model, timeoutMs: options.timeoutMs });
   }
@@ -229,7 +270,7 @@ function readVector(blob) {
  * @param {{model?:string, limit?:number}} [options]
  */
 export function nearestByVector(db, vector, options = {}) {
-  const model = options.model || DEFAULT_MODEL;
+  const model = activeEmbedModel(options.model);
   const limit = positive(options.limit, 3);
   const rows = db
     .prepare('SELECT memory_id, vec FROM embeddings WHERE model = ?')

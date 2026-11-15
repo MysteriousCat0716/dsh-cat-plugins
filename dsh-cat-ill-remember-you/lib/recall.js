@@ -11,8 +11,8 @@
 
 import { anchorsOf, entitiesOf } from './extract.js';
 import {
+  activeEmbedModel,
   DEFAULT_ENDPOINT,
-  DEFAULT_MODEL,
   embedText,
   endpointReady,
   nearestByVector,
@@ -410,6 +410,17 @@ function usedBoost(db, id, now = Date.now()) {
   // 上限 0.8：中频锚点命中 2 × (1/ln(2+10)) ≈ 0.8，boost 不该压过它。
   return Math.min(0.8, Math.max(0, (posterior - p0) * 1.2));
 }
+// 记忆会淡：同样一次命中，昨天记的比上个月的重。permanent 是钉子，不衰减。
+// 下限 0.35 是不让老条目被彻底压死——7 天半衰期，30 天前的还剩 0.38。
+const RECENCY_HALFLIFE_MS = 7 * 24 * 3600 * 1000;
+const RECENCY_FLOOR = 0.35;
+export function recencyOf(item, now = Date.now()) {
+  if (item.retention === 'permanent') return 1;
+  const t = Number(item.t || 0);
+  if (!t) return 1;
+  const age = Math.max(0, now - t);
+  return RECENCY_FLOOR + (1 - RECENCY_FLOOR) * Math.pow(0.5, age / RECENCY_HALFLIFE_MS);
+}
 function scoreOf(item, query, db, now = Date.now()) {
   let score = 0;
   for (const value of item.anchors) if (query.anchors.includes(value)) score += 2 * weightOf(db, value);
@@ -418,9 +429,11 @@ function scoreOf(item, query, db, now = Date.now()) {
   if (item.retention === 'permanent') score += 2;
   // 提取强度：越常被真的用出来的记忆，越容易被再取回。
   score += usedBoost(db, item.id, now);
-  // 情绪只改保留期（retentionOf），不再额外加分：
+  // 近因：人的联想里，昨天的事比三个月前的事先浮上来。乘在总分上，
+  // 不另起一维——分数仍是「这次命中值多重」。
+  // 情绪只改保留期（retentionOf），不额外加分：
   // 同一判据触发两次效果，会把「有点烦」这类词表误判放大一倍。
-  return score;
+  return score * recencyOf(item, now);
 }
 
 // turn 不参与过滤：它是进程内轮次，旧会话恢复后从 1 重新数，
@@ -645,7 +658,8 @@ export async function retrieve(
         vectorStatus = 'failed';
         vectorReason = 'endpoint-down';
       } else {
-        const model = process.env.DSH_MEMORY_CORE_EMBED_MODEL || DEFAULT_MODEL;
+        // 模型名跟着后端走：只切 BACKEND=cloudflare 时不能把 qwen3 发过去。
+        const model = activeEmbedModel();
         const vectorLimit = Number(process.env.DSH_MEMORY_CORE_VECTOR_LIMIT || 3);
         const vectorMin = Number(process.env.DSH_MEMORY_CORE_VECTOR_MIN || 0.55);
         const probe = await embedText(query.text, { model, endpoint, timeoutMs: 2500 });

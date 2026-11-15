@@ -150,6 +150,11 @@ export function apply(ctx) {
   // 只兜底跨会话相同的部分（全局栈 + 常驻层）：检索结果是按别的会话 query 算的，
   // 拿它当本会话的记忆就是污染。
   let lastBaseHint = '';
+  // 静态块（全局栈 + 常驻 persona）不该每轮重发：同一份内容插一次就留在上下文里，
+  // 每轮再插一遍只是把 5–9K 字符在消息流里叠成十几份。每 STATIC_REFRESH 轮补一次，
+  // 防止长会话被裁剪之后彻底断掉；其余轮只发「这轮检索到的」那一小段。
+  const staticTurns = new Map();
+  const STATIC_REFRESH = 10;
   // 面板的「开关替换」「输出预览」没有会话上下文；记下最近动过的会话当当前会话。
   // 多窗口同时说话时跟最后那个，面板上显示它的后 6 位，不假装是精确的。
   let lastSid = '';
@@ -770,7 +775,16 @@ export function apply(ctx) {
       // A1 层开关：DSH_MEMORY_CORE_STACK=off 关掉（默认开）。
       // 关掉时检索 query 也不再带栈里的两条——否则测出来是「没注入但照着栈取回」。
       const stackOn = envOn('DSH_MEMORY_CORE_STACK', true);
-      if (stackOn) try {
+      // 本会话走到第几轮：决定这次要不要带静态块（栈 + 常驻）。
+      // 用自己数的轮次而不是 pre-step 的 turn：会话恢复后 turn 会从 0 重来。
+      const turnIndex = (staticTurns.get(sid) ?? 0) + 1;
+      staticTurns.set(sid, turnIndex);
+      // 会话多了不清会一直涨；只留最近 200 个，最老的先丢（丢了只是下一轮重新补一次静态块）。
+      while (staticTurns.size > 200) {
+        staticTurns.delete(staticTurns.keys().next().value);
+      }
+      const staticTurn = turnIndex === 1 || turnIndex % STATIC_REFRESH === 0;
+      if (stackOn && staticTurn) try {
         // 当前窗口里已经有的行不要在本会话段重复一遍：用户刚发的那条在
         // pre-step 之前就入栈了，不排掉会在同一个 prompt 里出现两次。
         // 用 seq 而不是轮次号——seq 是宿主真相，跨重启、恢复会话都成立。
@@ -882,6 +896,11 @@ export function apply(ctx) {
           );
         } catch (error) {
           log(`recall trace failed: ${error?.message ?? error}`);
+        }
+        // 常驻 persona 和全局栈一样是静态内容：只在 static 轮注入，其余轮摘掉。
+        // 不摘的话同一张 40 条的表每轮都往消息流里叠一份，17 轮就是 17 份。
+        if (!staticTurn) {
+          hits = hits.filter((hit) => hit.section !== 'persona');
         }
         if (hits.length > 0) {
           const text = renderHint(hits);
