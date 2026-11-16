@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Codex model &amp; reasoning effort selector">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3E84F6"/>
+      <stop offset="1" stop-color="#8E4EF2"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="15" fill="url(#bg)"/>
+  <path d="M36.71 16.17 L35.36 25.85 L44.85 27.24 L28.57 45.93 L29.93 34.85 L20.43 32.79 Z" fill="#FFFFFF"/>
+</svg>

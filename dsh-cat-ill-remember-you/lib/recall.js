@@ -368,6 +368,26 @@ function weightOf(db, term) {
   weights.set(key, weight);
   return weight;
 }
+// 自我复制检测：候选摘要和当前这句话近乎逐字相同时，不算召回。
+// weak 层的判据就是字面重合，而「当前这句话自己的历史副本」字面重合必然是 100%
+// ——它永远排第一，把真正的旧事挤出预算。2026-11-16 评测的 4 条 query 里，
+// #1811 / #1800 / #1764 都是这么进来的（#1804 是「问句 + 回答」的拼接，算有效）。
+const normText = (value) => String(value || '').replace(/[\s\p{P}]+/gu, '');
+function echoOf(summary, query) {
+  const s = normText(summary);
+  const q = normText(query);
+  if (!q || !s) return 0;
+  // 明显比 query 长的不算：那是「用户原话 + 回答/细节」，带信息。
+  if (s.length > q.length * 1.5 + 24) return 0;
+  let hit = 0;
+  let total = 0;
+  for (let i = 0; i + 3 <= s.length; i += 1) {
+    total += 1;
+    if (q.includes(s.slice(i, i + 3))) hit += 1;
+  }
+  return total ? hit / total : 0;
+}
+
 // 提取强度：人越常想起来的记忆，越容易被再想起来。
 // 用 recall_log 的 used 率当近似——注入过、而且真的被说出来的比例。
 // 只注入过一两次说明不了什么，所以按样本量降权；上限 1.5 分，
@@ -689,7 +709,8 @@ export async function retrieve(
       } else {
         // 模型名跟着后端走：只切 BACKEND=cloudflare 时不能把 qwen3 发过去。
         const model = activeEmbedModel();
-        const vectorLimit = Number(process.env.DSH_MEMORY_CORE_VECTOR_LIMIT || 3);
+        // 3 太小：候选前 3 条常常已被 cache/L2 推过，seen 一拦就一条都补不进来。
+        const vectorLimit = Number(process.env.DSH_MEMORY_CORE_VECTOR_LIMIT || 10);
         const vectorMin = Number(process.env.DSH_MEMORY_CORE_VECTOR_MIN || 0.55);
         const probe = await embedText(query.text, { model, endpoint, timeoutMs: 2500 });
         for (const candidate of nearestByVector(db, probe, { model, limit: vectorLimit })) {
@@ -808,6 +829,11 @@ export async function retrieve(
           others.every((df) => df >= minDf * 2);
         if (score <= 0 || (hits < Math.min(2, terms.length) && !rare)) {
           note('weak', item, 'low-weak');
+          continue;
+        }
+        // 近乎逐字重合的是这句话自己的副本，不是旧事。
+        if (echoOf(item.summary, query.text) >= 0.85) {
+          note('weak', item, 'echo');
           continue;
         }
         item.section = 'weak';

@@ -115,6 +115,26 @@ test('refine: 改口链按提问位置挂，回答早到晚到都不影响', () 
   db.close();
 });
 
+test('refine: 答案还没落库的 user 块不消费，等回答到了再炼成完整问答', () => {
+  const db = openStore(':memory:');
+  // 用户那一句已经入库，assistant 那一段还没到（它要等本轮结束才写 turns）。
+  insertTurn(db, { sid: 'main', seq: 1, role: 'user', text: '以后 Ollama 只用来算向量，不做生成。', t: 1000 });
+  refine(db);
+  assert.equal(db.prepare('SELECT count(*) AS n FROM memories').get().n, 0, '先不炼半截问答');
+  assert.equal(db.prepare('SELECT consumed FROM turns WHERE seq = 1').get().consumed, 0, '不标已消费');
+
+  // 回答到了；rescan 时间未到，手工放开重扫，模拟下一轮。
+  insertTurn(db, { sid: 'main', seq: 2, role: 'assistant', text: '行，记下了。', t: 2000 });
+  db.prepare('UPDATE turns SET scanned_at = 0 WHERE consumed = 0').run();
+  refine(db);
+
+  const rows = db.prepare('SELECT text FROM memories').all();
+  assert.equal(rows.length, 1, '答案到了炼出完整问答');
+  assert.ok(/行，记下了/.test(String(rows[0].text)), '回答进了记忆');
+  assert.equal(db.prepare('SELECT consumed FROM turns WHERE seq = 1').get().consumed, 1, '成对后消费');
+  db.close();
+});
+
 test('refine: 块的实体统计按处理顺序累加', () => {
   const db = openStore(':memory:');
   insertTurn(db, { sid: 'main', seq: 1, role: 'user', text: '以后 Ollama 只用来算向量，不做生成。', t: 1000 });

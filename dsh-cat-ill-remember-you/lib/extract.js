@@ -525,7 +525,22 @@ export function refine(db, opts = {}) {
   // SQLITE_BUSY after the INSERTs replays the same turns into duplicate rows.
   db.exec('BEGIN IMMEDIATE');
   try {
+    // 每个会话里最后一条 turn 是谁——用来区分「答案还没落库」和「用户连发两句」。
+    const lastBySid = new Map();
+    for (const turn of turns) lastBySid.set(turn.sid, turn.id);
+
     for (const block of blocks) {
+      // 只有 user、没有 assistant 的块，可能是答案还没入库——assistant 消息要等
+      // 本轮结束才写进 turns，而用户那句已经在了。现在提炼只会存半句问话，
+      // 还把 user 标成 consumed，等答案到了也配不上它（2026-11-16 的 Q9 就是
+      // 这么丢的：#3511 单独成块存成 #1764，五分钟后落库的 #3512 成了孤儿）。
+      // 但它也可能是用户连发两句（第二句接走了第一句的回答）：按「该 sid 的
+      // 最后一条是不是它」区分——是，答案还没到，留给下一轮；不是，就是独立
+      // 表态，照常提炼。
+      const onlyUser = block.turns.every((turn) => turn.role === 'user');
+      if (onlyUser && lastBySid.get(block.turns[block.turns.length - 1].sid) === block.turns[block.turns.length - 1].id) {
+        continue;
+      }
       const candidate = candidateOf(block);
       if (!candidate) continue;
       const { inserted } = insertMemory(db, candidate);
