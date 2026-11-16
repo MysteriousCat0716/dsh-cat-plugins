@@ -184,7 +184,7 @@ export function weakCandidatePool(db, all, limit = 200) {
   const values = all.map((term) => `%${escapeLike(term)}%`)
   return db
     .prepare(
-      `SELECT id, kind, summary, text, entities, anchors, t, mentions, confidence, retention
+      `SELECT id, kind, summary, text, entities, anchors, t, mentions, confidence, retention, importance
          FROM memories WHERE tier='active' AND origin IN ('chat','unknown','manual')
            AND (${like}) ORDER BY (${overlap}) DESC, t DESC LIMIT ${Number(limit) || 200}`,
     )
@@ -246,6 +246,7 @@ function rowToItem(row, source) {
     scene: sceneOf(row.why),
     confidence: row.confidence ?? 'explicit',
     retention: row.retention ?? 'auto',
+    importance: Number(row.importance ?? 0),
   };
 }
 
@@ -393,6 +394,25 @@ function echoOf(summary, query) {
 // 只注入过一两次说明不了什么，所以按样本量降权；上限 1.5 分，
 // 不到一条锚点命中（2×weight）的量级，避免「用过的永远赢」。
 const usageCaches = new WeakMap();
+// 被取代集合：`supersedes` 一直只有写入方，召回从没读过（2026-11-15 彻查 A3）。
+// 结果是「改成 X 了」之后，旧 Y 照样和 X 同分争位置。这里只降权不排除：
+// 用户问「以前是不是说 Y」，旧条仍然是答案。
+const supersededCaches = new WeakMap();
+function supersededBy(db) {
+  let set = supersededCaches.get(db);
+  if (set) return set;
+  set = new Set();
+  try {
+    for (const row of db.prepare('SELECT supersedes FROM memories WHERE supersedes IS NOT NULL').all()) {
+      const id = Number(row.supersedes);
+      if (id) set.add(id);
+    }
+  } catch {
+    /* 老库没这列：没有取代关系，不用降权 */
+  }
+  supersededCaches.set(db, set);
+  return set;
+}
 const USAGE_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 const USAGE_PRIOR_N = 3;
 const USAGE_PRIOR_P = 0.3;
@@ -441,19 +461,27 @@ export function recencyOf(item, now = Date.now()) {
   const age = Math.max(0, now - t);
   return RECENCY_FLOOR + (1 - RECENCY_FLOOR) * Math.pow(0.5, age / RECENCY_HALFLIFE_MS);
 }
-function scoreOf(item, query, db, now = Date.now()) {
+export function scoreOf(item, query, db, now = Date.now()) {
   let score = 0;
   for (const value of item.anchors) if (query.anchors.includes(value)) score += 2 * weightOf(db, value);
   for (const value of item.entities) if (query.entities.includes(value)) score += weightOf(db, value);
   // 「钉子」：显式 permanent 的记忆不靠时间赢，也不该被更近的条目挤掉。
   if (item.retention === 'permanent') score += 2;
+  // 重要度：3 是「明确说过的事实」这一档，作为零点。4 分（表态/判断）多加 0.8，
+  // 2 分（转述）减 0.4。0 = 老库没标过，按 3 算，不让升级本身改排序。
+  const importance = Number(item.importance) > 0 ? Number(item.importance) : 3;
+  score += (importance - 3) * 0.8;
   // 提取强度：越常被真的用出来的记忆，越容易被再取回。
   score += usedBoost(db, item.id, now);
   // 近因：人的联想里，昨天的事比三个月前的事先浮上来。乘在总分上，
   // 不另起一维——分数仍是「这次命中值多重」。
   // 情绪只改保留期（retentionOf），不额外加分：
   // 同一判据触发两次效果，会把「有点烦」这类词表误判放大一倍。
-  return score * recencyOf(item, now);
+  let total = score * recencyOf(item, now);
+  // 被后来的说法取代过：仍然可以召回（用户可能正是在问旧说法），
+  // 但让位给现在还成立的那条。0.35 是让它在强命中的旧条面前仍能翻上来。
+  if (supersededBy(db).has(Number(item.id))) total *= 0.35;
+  return total;
 }
 
 // turn 不参与过滤：它是进程内轮次，旧会话恢复后从 1 重新数，
@@ -496,6 +524,7 @@ export async function retrieve(
 ) {
   // 每轮重新读一次提取强度；否则同一进程里 used 回填后分数不会变。
   usageCaches.delete(db);
+  supersededCaches.delete(db);
   const query = queryOf(text);
   // 栈文本也拼进了检索句，但「这一句里有没有指代」要按用户原话判断：
   // 混着栈看，referral 几乎每轮都真，L3 的原文扫描就会每轮都跑。
@@ -544,7 +573,7 @@ export async function retrieve(
     const marks = query.entities.map(() => '?').join(',');
     const rows = db
       .prepare(
-        `SELECT id, kind, summary, text, entities, anchors, t, mentions, confidence, retention FROM memories
+        `SELECT id, kind, summary, text, entities, anchors, t, mentions, confidence, retention, importance FROM memories
          WHERE tier = 'active' AND origin IN ('chat', 'unknown', 'manual')
            AND EXISTS (SELECT 1 FROM json_each(memories.entities) WHERE json_each.value IN (${marks}))
          ORDER BY t DESC LIMIT 6`,
@@ -575,7 +604,7 @@ export async function retrieve(
     const marks = toolAnchors.map(() => '?').join(',');
     const rows = db
       .prepare(
-        `SELECT id, kind, summary, text, entities, anchors, t, mentions, confidence, retention FROM memories
+        `SELECT id, kind, summary, text, entities, anchors, t, mentions, confidence, retention, importance FROM memories
          WHERE tier = 'active' AND origin IN ('chat', 'unknown', 'manual')
            AND EXISTS (SELECT 1 FROM json_each(memories.anchors) WHERE json_each.value IN (${marks}))
          ORDER BY t DESC LIMIT 6`,
@@ -603,7 +632,7 @@ export async function retrieve(
   // L1: the newest three distilled memories double as the sliding cache.
   const cacheRows = db
     .prepare(
-      `SELECT id, kind, summary, text, entities, anchors, t, mentions, confidence, retention FROM memories
+      `SELECT id, kind, summary, text, entities, anchors, t, mentions, confidence, retention, importance FROM memories
        WHERE tier = 'active' AND origin IN ('chat', 'unknown', 'manual') ORDER BY t DESC LIMIT ?`,
     )
     .all(CACHE_SIZE);
@@ -650,7 +679,7 @@ export async function retrieve(
   if (clauses.length) {
     const rows = db
       .prepare(
-        `SELECT id, kind, summary, text, entities, anchors, t, mentions, confidence, retention FROM memories
+        `SELECT id, kind, summary, text, entities, anchors, t, mentions, confidence, retention, importance FROM memories
          WHERE tier IN ('active','dormant') AND origin IN ('chat', 'unknown', 'manual') AND (${clauses.join(' OR ')})
          ORDER BY t DESC LIMIT 120`,
       )
@@ -727,7 +756,7 @@ export async function retrieve(
           }
           const row = db
             .prepare(
-              `SELECT id, kind, summary, text, entities, anchors, t, mentions, confidence, retention FROM memories
+              `SELECT id, kind, summary, text, entities, anchors, t, mentions, confidence, retention, importance FROM memories
                WHERE id = ? AND tier IN ('active','dormant') AND origin IN ('chat', 'unknown', 'manual')`,
             )
             .get(candidate.memory_id);

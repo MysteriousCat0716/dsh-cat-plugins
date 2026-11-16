@@ -460,6 +460,19 @@ function foldPattern(db, id, item) {
   );
 }
 
+/**
+ * 写入时的初始重要度（1–5）。以前这个字段根本不存在，fact 和约定同层竞争。
+ * 只按 kind 和 confidence 给，不调模型：这一步要便宜、可解释、能覆写。
+ */
+function importanceOf(item) {
+  const kind = String(item.kind || 'fact');
+  // 表态类：改了主意要按新的办，是最该被优先想起来的。
+  if (kind === 'decision' || kind === 'preference' || kind === 'judgment' || kind === 'insight') return 4;
+  if (kind === 'emotion') return 3;
+  // 事实：用户明确说的比转述的高一档。转述的（reference）最容易混进噪音。
+  return item.confidence === 'explicit' ? 3 : 2;
+}
+
 export function insertMemory(db, item) {
   // 改口和「同一话题重复」要分开：改口必须插新条并挂链，否则新决定
   // 会被并进旧条里，supersedes 永远用不上。
@@ -474,8 +487,8 @@ export function insertMemory(db, item) {
     return { id: merged, inserted: false };
   }
   const stmt = db.prepare(
-    'INSERT INTO memories (kind, origin, subject, text, summary, entities, anchors, why, tier, retention, t, source_sid, source_seq, confidence, supersedes, rule_ver) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO memories (kind, origin, subject, text, summary, entities, anchors, why, tier, retention, t, source_sid, source_seq, confidence, importance, supersedes, rule_ver) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
   );
   // 只在明确改口时记链；旧条不降级，等 used 数据说话。
   const result = stmt.run(
@@ -493,6 +506,7 @@ export function insertMemory(db, item) {
     item.source_sid,
     item.source_seq,
     item.confidence ?? 'explicit',
+    item.importance ?? importanceOf(item),
     supersedes,
     item.rule_ver ?? RULE_VER,
   );

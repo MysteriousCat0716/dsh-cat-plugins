@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS memories (
   source_sid TEXT,
   source_seq INTEGER,
   confidence TEXT NOT NULL DEFAULT 'explicit',
+  -- 重要度 1–5，0 = 未标。写入时按 kind/confidence 给初值，可覆写。
+  importance INTEGER NOT NULL DEFAULT 0,
   supersedes INTEGER,
   rule_ver   TEXT    NOT NULL DEFAULT 'r0',
   -- 同一话题被反复说：不复制正文，只升票数。≥3 进 persona 建议清单。
@@ -249,6 +251,9 @@ export function openStore(file = DEFAULT_DB_FILE) {
     ensureColumn(db, 'memories', 'supersedes', 'INTEGER');
     ensureColumn(db, 'memories', 'rule_ver', "TEXT NOT NULL DEFAULT 'r0'");
     ensureColumn(db, 'memories', 'mentions', 'INTEGER NOT NULL DEFAULT 1');
+    // 重要度：1–5，0 表示「还没标」。写入时按 kind/confidence 给一个初值，
+    // 手写的可以覆写。以前这一列根本不存在，事实和约定躺在同一层里拼字面。
+    ensureColumn(db, 'memories', 'importance', 'INTEGER NOT NULL DEFAULT 0');
     // 衰减：forget_n = 已经降过几次级（间隔按 1.5^n 递增），forget_at = 上一次
     // 降级的时刻——下一段间隔从那一刻起算，而不是从写入时间。没有 forget_at
     // 的话，一条沉睡了两年的记忆一进 dormant 就会立刻被判成 cold。
