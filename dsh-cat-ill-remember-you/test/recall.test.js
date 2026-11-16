@@ -204,7 +204,10 @@ test('retrieve: caps hits at MAX_HITS', async () => {
     stmt.run(`缓存第 ${i} 条的结论`, `缓存第 ${i} 条`, JSON.stringify(['产出/插件/foo.js']), 1000 + i);
   }
   const hits = await retrieve(db, { text: '产出/插件/foo.js 还要改吗', recent: [] });
-  assert.equal(hits.length, MAX_HITS);
+  // 上限，不是必须填满：L2 收紧后同一锚点的 12 条只进前 3 条，
+  // 剩下的预算留给弱匹配/原文层，命中率比塞满更高。
+  assert.ok(hits.length <= MAX_HITS);
+  assert.ok(hits.length > 0);
 });
 
 test('retrieve: one question with several answers keeps only the newest', async () => {

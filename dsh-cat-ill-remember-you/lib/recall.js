@@ -601,13 +601,29 @@ export async function retrieve(
   // L2: distilled memories matched by anchor or entity. Match inside the JSON
   // array element-wise: a LIKE over the serialized array would treat `%`/`_`
   // in paths and entity names as wildcards.
+  //
+  // 2026-11-16 收紧候选生成：原来 query 里每个锚点、每个实体都进 OR，任何一个
+  // 稀疏词命中就能把整条记忆拉进候选池；而取回按 t 取最新 24 条、在「评分」
+  // 之前就截断——等于用时间当闸门，把字面像但说的不是一回事的旧事也捞进来。
+  // 实验（372 样本）显示排序侧怎么调都是噪音，瓶颈在「谁进候选」。
+  // 现在：锚点按稀有度取前 4、实体取前 2；取回后按分数排序，只进前 3 条，
+  // 其余记进 trace（below-top）而不是静默丢掉。
+  const ANCHOR_TOP = 4;
+  const ENTITY_TOP = 2;
+  const L2_TOP = 3;
+  const rankBy = (values, top) =>
+    values
+      .map((value) => ({ value, weight: weightOf(db, value) }))
+      .sort((a, b) => b.weight - a.weight)
+      .slice(0, top)
+      .map((entry) => entry.value);
   const clauses = [];
   const params = [];
-  for (const anchor of query.anchors) {
+  for (const anchor of rankBy(query.anchors, ANCHOR_TOP)) {
     clauses.push('EXISTS (SELECT 1 FROM json_each(memories.anchors) WHERE json_each.value = ?)');
     params.push(anchor);
   }
-  for (const entity of query.entities) {
+  for (const entity of rankBy(query.entities, ENTITY_TOP)) {
     clauses.push('EXISTS (SELECT 1 FROM json_each(memories.entities) WHERE json_each.value = ?)');
     params.push(entity);
   }
@@ -616,9 +632,10 @@ export async function retrieve(
       .prepare(
         `SELECT id, kind, summary, text, entities, anchors, t, mentions, confidence, retention FROM memories
          WHERE tier IN ('active','dormant') AND origin IN ('chat', 'unknown', 'manual') AND (${clauses.join(' OR ')})
-         ORDER BY t DESC LIMIT 24`,
+         ORDER BY t DESC LIMIT 120`,
       )
       .all(...params);
+    const scored = [];
     for (const row of rows) {
       const item = rowToItem(row, 'memory');
       if (given.has(`memory:${item.id}`)) {
@@ -626,9 +643,21 @@ export async function retrieve(
         continue;
       }
       item.score = scoreOf(item, query, db, now);
+      if (!item.score) continue;
+      scored.push(item);
+    }
+    scored.sort((a, b) => b.score - a.score);
+    // L1 缓存已经推过的条目还留在 scored 里，占掉 L2_TOP 的名额却不进 hits
+    // （push 会按 seen 拦掉）。先滤出去，否则「新候选一条都没进来」。
+    const fresh = scored.filter((item) => !seen.has(`memory:${item.id}`));
+    for (const item of fresh.slice(0, L2_TOP)) {
       item.why = whyOf(item, query);
       push(item);
     }
+    // 落选的也留个痕：诊断脚本要能分清「没进候选」和「进了但没上前三」。
+    // 只记 3 条——trace 有 12 条上限，below-top 占满了，后面装盘阶段的
+    // budget/duplicate 就全被挤掉，读账的人会以为名额从来没满过。
+    for (const item of fresh.slice(L2_TOP, L2_TOP + 3)) note('anchor', item, 'below-top');
   }
 
   // L2.4: 向量候选。锚点/实体没补满两条就试一次；只在「全空」时才跑的话，
