@@ -131,11 +131,43 @@ async function weeklyCycle() {
   log(`conflicts exit=${c.code} | ${lastLine(c.out)}`);
 }
 
+/**
+ * 这一拍该不该干活。抽成纯函数是为了能测：三条件（开关/空闲/间隔）里
+ * 任何一条写反，表现都是「要么在对话中跑全量索引，要么永远不跑」——
+ * 两种都不会报错，只能靠测试守。
+ */
+export function shouldRun({
+  enabled,
+  running,
+  disposed,
+  now,
+  lastTurnEnd,
+  lastRun,
+  idleMs,
+  minGapMs,
+}) {
+  if (!enabled || running || disposed) return false;
+  if (now - lastTurnEnd < idleMs) return false;
+  if (now - lastRun < minGapMs) return false;
+  return true;
+}
+
 async function tick() {
-  if (!CFG.enabled || running || disposed) return;
+  if (
+    !shouldRun({
+      enabled: CFG.enabled,
+      running,
+      disposed,
+      now: Date.now(),
+      lastTurnEnd,
+      lastRun,
+      idleMs: CFG.idleMs,
+      minGapMs: CFG.minGapMs,
+    })
+  ) {
+    return;
+  }
   const now = Date.now();
-  if (now - lastTurnEnd < CFG.idleMs) return;
-  if (now - lastRun < CFG.minGapMs) return;
   running = true;
   lastRun = now;
   try {
