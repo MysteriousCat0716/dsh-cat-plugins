@@ -1,5 +1,8 @@
 import { insertTurn } from './db.js';
-import { evictOverflow, pushStack } from './context-stack.js';
+import { evictOverflow, pushStack, pruneStack } from './context-stack.js';
+
+// 每两百句顺手清一次很老的已出栈行；用计数而不是每句都扫表。
+let stackTicks = 0;
 import { refineBlock, wantsImmediate } from './extract.js';
 
 /**

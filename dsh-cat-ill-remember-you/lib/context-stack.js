@@ -157,6 +157,33 @@ export function stackSize(db) {
 }
 
 /**
+ * 清掉很老的已出栈行。出栈只标 `evicted=1`、不删行（为了让 `stackQueryText`
+ * 还能取到摘要），表就只增不减——2026-11-16 是 2836 行、其中 2400 多条是历史。
+ * 保留策略：每个会话只留最近 keepPerSession 条。不按天数卡：整个库才 17 天，
+ * 天数条件等于不删。拼检索句只用最近几条，200 条之外的摘要留着没有收益。
+ * @returns {number} 删除的行数
+ */
+export function pruneStack(db, { keepPerSession = 200 } = {}) {
+  const keep = Math.max(1, Math.floor(Number(keepPerSession) || 200));
+  try {
+    const result = db
+      .prepare(
+        `DELETE FROM context_stack WHERE id IN (
+           SELECT id FROM (
+             SELECT id, ROW_NUMBER() OVER (PARTITION BY sid ORDER BY t DESC) AS rn
+             FROM context_stack
+           ) WHERE rn > ?
+         )`,
+      )
+      .run(keep);
+    return Number(result.changes ?? 0);
+  } catch {
+    // 老 SQLite 没有窗口函数：跳过清理，不影响入栈/出栈。
+    return 0;
+  }
+}
+
+/**
  * 出栈：每个会话只留最近 perSession 条 active，全局再有上限兜底。
  * 不删行、不删 turns——出栈只是「不再当原文进注入」。
  *
