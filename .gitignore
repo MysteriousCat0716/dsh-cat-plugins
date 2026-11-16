@@ -29,3 +29,4 @@ _tmp/
 
 # codegraph 本地索引（2026-11-07）
 .codegraph/
+dsh-tool-switch/
