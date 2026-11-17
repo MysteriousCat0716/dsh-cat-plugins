@@ -1,3 +1,4 @@
+import './isolate-env.js';
 import test, { afterEach, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

@@ -12,7 +12,7 @@
  */
 
 import net from 'node:net';
-import { embedTextCloudflare, CLOUDFLARE_MODEL } from './embed-cf.js';
+import { embedTextCloudflare, CLOUDFLARE_MODEL, cloudflareReady } from './embed-cf.js';
 
 export const DEFAULT_MODEL = 'qwen3-embedding:0.6b';
 export const DEFAULT_ENDPOINT = 'http://127.0.0.1:11434';
@@ -20,15 +20,32 @@ export const DEFAULT_BATCH = 16;
 export const DEFAULT_TIMEOUT_MS = 30_000;
 
 /**
- * 向量层要不要用。默认关，必须显式 `DSH_MEMORY_CORE_VECTOR=on` 才开。
+ * 当前生效的向量后端：显式 `DSH_MEMORY_CORE_EMBED_BACKEND` 优先；没设时，
+ * 只要 ~/.dsh/memory/cloudflare.json 配好了就走 cloudflare，否则退回 ollama。
  *
- * 为什么默认关：这一层需要本机常驻 Ollama，而 Ollama 不在时每轮都要探一次
- * 端口、失败后冷却 60 秒，后台还要每 10 分钟重试回填。它的收益上限是补
- * 一条候选（见 recall.js 的 0.55 门槛），代价是一个常驻进程——不值得让
- * 所有人默认背上。纯 SQLite 的锚点/实体/弱匹配三层不依赖任何外部进程。
+ * 为什么不默认 'ollama'：本机 Ollama 已不常驻（curl 127.0.0.1:11434 直接
+ * EXIT=7），而 setx 写进注册表的环境变量不会推给已经在跑的 DSH 进程——配好
+ * 了云端、重启后向量层却还是关着，这条链路就是这么空了一个多星期。默认值
+ * 不能取决于用户有没有注销重登 Windows。
+ */
+export function activeBackend() {
+  const explicit = process.env.DSH_MEMORY_CORE_EMBED_BACKEND;
+  if (explicit) return explicit;
+  return cloudflareReady() ? 'cloudflare' : 'ollama';
+}
+
+/**
+ * 向量层要不要用。显式 `off` 关、显式 `on` 开；没设时跟着 activeBackend()
+ * 走——云端后端是纯 HTTP、不需要常驻进程，配好了就该默认开着。
+ *
+ * 这条闸门只防「没配任何后端却每轮去探 Ollama 端口」。真正的失败处理在
+ * recall.js 的 try/catch 与 embedRetryAt 退避里，不靠这里关掉整层。
  */
 export function vectorsEnabled() {
-  return process.env.DSH_MEMORY_CORE_VECTOR === 'on';
+  const explicit = process.env.DSH_MEMORY_CORE_VECTOR;
+  if (explicit === 'off') return false;
+  if (explicit === 'on') return true;
+  return activeBackend() === 'cloudflare';
 }
 
 /**
@@ -43,7 +60,7 @@ export function activeEmbedModel(override) {
   if (override) return override;
   const fromEnv = process.env.DSH_MEMORY_CORE_EMBED_MODEL;
   if (fromEnv) return fromEnv;
-  const backend = process.env.DSH_MEMORY_CORE_EMBED_BACKEND || 'ollama';
+  const backend = activeBackend();
   return backend === 'cloudflare' ? CLOUDFLARE_MODEL : DEFAULT_MODEL;
 }
 
@@ -66,7 +83,7 @@ function toBlob(vector) {
  */
 export async function embedPending(db, options = {}) {
   const model = activeEmbedModel(options.model);
-  const backend = process.env.DSH_MEMORY_CORE_EMBED_BACKEND || 'ollama';
+  const backend = activeBackend();
   const endpoint = (
     options.endpoint ||
     process.env.DSH_MEMORY_CORE_OLLAMA ||
@@ -184,7 +201,7 @@ export function pendingEmbeddings(db, model = activeEmbedModel()) {
  * @returns {Promise<number[]>}
  */
 export async function embedText(text, options = {}) {
-  const backend = process.env.DSH_MEMORY_CORE_EMBED_BACKEND || 'ollama';
+  const backend = activeBackend();
   const model = activeEmbedModel(options.model);
   if (backend === 'cloudflare') {
     return embedTextCloudflare(text, { model, timeoutMs: options.timeoutMs });

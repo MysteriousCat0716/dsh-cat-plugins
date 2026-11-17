@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import './isolate-env.js';
 import test from 'node:test';
 
 import { openStore } from '../lib/db.js';

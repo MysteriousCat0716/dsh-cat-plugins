@@ -1,3 +1,4 @@
+import './isolate-env.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 

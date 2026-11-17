@@ -1,9 +1,13 @@
+import './isolate-env.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { openStore } from '../lib/db.js';
 import { retrieve } from '../lib/recall.js';
-import { vectorsEnabled } from '../lib/embed.js';
+import { activeBackend, vectorsEnabled } from '../lib/embed.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 function withEnv(value, run) {
   const previous = process.env.DSH_MEMORY_CORE_VECTOR;
@@ -17,12 +21,37 @@ function withEnv(value, run) {
   }
 }
 
-test('vectors: 默认关，只有显式 on 才开', () => {
+test('vectors: 没有云端配置时默认关，显式 on 才开', () => {
   withEnv(undefined, () => assert.equal(vectorsEnabled(), false));
   withEnv('off', () => assert.equal(vectorsEnabled(), false));
   withEnv('', () => assert.equal(vectorsEnabled(), false));
   withEnv('1', () => assert.equal(vectorsEnabled(), false));
   withEnv('on', () => assert.equal(vectorsEnabled(), true));
+});
+
+test('vectors: 配好云端、两处开关都没设时默认开启（2026-11-17 回归）', () => {
+  // 本机 Ollama 已不常驻，setx 写进注册表的环境变量也不推给正在跑的 DSH；
+  // 只靠显式 DSH_MEMORY_CORE_VECTOR=on 打开，这条链路会在重启后一直关着。
+  const file = path.join(os.tmpdir(), `dsh-test-cf-${process.pid}.json`);
+  fs.writeFileSync(file, JSON.stringify({ accountId: 'acc', apiToken: 'tok' }));
+  const prevFile = process.env.DSH_CLOUDFLARE_FILE;
+  const prevVector = process.env.DSH_MEMORY_CORE_VECTOR;
+  const prevBackend = process.env.DSH_MEMORY_CORE_EMBED_BACKEND;
+  try {
+    process.env.DSH_CLOUDFLARE_FILE = file;
+    delete process.env.DSH_MEMORY_CORE_VECTOR;
+    delete process.env.DSH_MEMORY_CORE_EMBED_BACKEND;
+    assert.equal(activeBackend(), 'cloudflare');
+    assert.equal(vectorsEnabled(), true);
+  } finally {
+    fs.unlinkSync(file);
+    if (prevFile === undefined) delete process.env.DSH_CLOUDFLARE_FILE;
+    else process.env.DSH_CLOUDFLARE_FILE = prevFile;
+    if (prevVector === undefined) delete process.env.DSH_MEMORY_CORE_VECTOR;
+    else process.env.DSH_MEMORY_CORE_VECTOR = prevVector;
+    if (prevBackend === undefined) delete process.env.DSH_MEMORY_CORE_EMBED_BACKEND;
+    else process.env.DSH_MEMORY_CORE_EMBED_BACKEND = prevBackend;
+  }
 });
 
 test('retrieve: 默认不跑向量层——只有向量相似的旧事不会被取回', async () => {

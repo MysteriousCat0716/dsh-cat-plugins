@@ -11,6 +11,7 @@
 
 import { anchorsOf, entitiesOf } from './extract.js';
 import {
+  activeBackend,
   activeEmbedModel,
   DEFAULT_ENDPOINT,
   embedText,
@@ -731,7 +732,7 @@ export async function retrieve(
       const endpoint = (
         process.env.DSH_MEMORY_CORE_OLLAMA || DEFAULT_ENDPOINT
       ).replace(/\\+$/, '');
-      const backend = process.env.DSH_MEMORY_CORE_EMBED_BACKEND || 'ollama';
+      const backend = activeBackend();
       if (backend !== 'cloudflare' && !(await endpointReady(endpoint))) {
         vectorStatus = 'failed';
         vectorReason = 'endpoint-down';
