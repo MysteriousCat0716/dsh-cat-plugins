@@ -812,6 +812,56 @@ export async function retrieve(
     layers.push({ name: 'vector', ran: true, status: vectorStatus, reason: vectorReason });
   }
 
+  // L2.6: 状态/情绪类 query（2026-11-17 加，Q11）。
+  //
+  // 「其实可以继续」「我现在有点累」这种句子没有名词：锚点/实体抽不出，
+  // 弱匹配又被停用词吃光（继续、可以、有点都在 WEAK_STOP），最后只剩向量层。
+  // 向量找的是话题相近——它会给一条同样在聊记忆插件的旧事，不会给
+  // 「你说这句话的那天在做什么」。
+  //
+  // 判据：句子里有状态词、且没有锚点/实体。这类问题要的是「最近你怎么样」，
+  // 不是某条事实，所以按 kind + 时间窗取，不参与词面竞争。
+  // 排序先看状态词有没有出现在那条记忆里（「继续」对 #1771），再看时间：
+  // 纯按时间的话，「其实可以继续」会拿到同一晚「内在看不见」那几条。
+  // 分数 0.55：高于弱匹配归一化后的上限 0.5、低于向量。状态句本来就抽不出词，
+  // 让它排在「词面碰巧重合」前面是对的——0.35 会被 6 条弱匹配挤出预算
+  // （2026-11-17 实测：state 层跑成了，final 排序里两条都在第 7 位）。
+  // 放在弱匹配之前：状态句本来就抽不出词，等弱匹配用完预算就轮不到了。
+  const STATE_HINT =
+    /(累|困|难受|开心|难过|情绪|心情|状态|不想动|休息|睡了|醒了|可以继续|接着做|接着来|还行|烦)/;
+  const stateHit = query.text.match(STATE_HINT)?.[0] ?? '';
+  const stateRan =
+    hits.length < MAX_HITS &&
+    query.anchors.length === 0 &&
+    query.entities.length === 0 &&
+    stateHit !== '';
+  if (stateRan) {
+    const rows = db
+      .prepare(
+        `SELECT id, kind, summary, text, entities, anchors, t, mentions, confidence, retention, importance
+           FROM memories
+          WHERE tier='active' AND kind IN ('emotion','preference')
+            AND origin IN ('chat','unknown','manual') AND t >= ?
+          ORDER BY t DESC LIMIT 20`,
+      )
+      .all(now - 7 * 24 * 3600 * 1000);
+    const ranked = rows
+      .map((row) => ({ row, hit: String(row.summary ?? '').includes(stateHit) ? 1 : 0 }))
+      .sort((a, b) => b.hit - a.hit || Number(b.row.t) - Number(a.row.t));
+    let picked = 0;
+    for (const { row } of ranked) {
+      if (picked >= 2) break;
+      const item = rowToItem(row, 'memory');
+      if (given.has(`memory:${item.id}`) || seen.has(`memory:${item.id}`)) continue;
+      item.section = 'state';
+      item.score = 0.55;
+      item.why = `这一轮在说状态（${stateHit}），句子里没有具体名词；这条是最近的状态类记忆。`;
+      push(item);
+      picked += 1;
+    }
+    layers.push({ name: 'state', ran: true, status: 'completed', terms: [stateHit], count: picked });
+  }
+
   // L2.5: 弱匹配。锚点、实体抽不出东西（或抽出了、前面的层没对上）时，
   // 用句子里的实词在记忆正文里找。旧实现要求「前面全空」才跑，而向量层
   // 已经先占了一个槽位，这一层几乎永远轮不到——变成只有向量失败时才兜底。

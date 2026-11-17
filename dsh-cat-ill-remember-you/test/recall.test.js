@@ -659,4 +659,35 @@ test('retrieve: 上次真的用过的记忆，注入行带「上次用在」', a
   assert.ok(renderHint(hits).includes('上次用在'));
   db.close();
 });
+test('retrieve: 状态句没有具体名词时，按状态词召回最近的情绪/偏好', async () => {
+  const db = openStore(':memory:');
+  const DAY = 86400000;
+  const insert = db.prepare(
+    `INSERT INTO memories (kind, text, summary, entities, anchors, why, tier, t)
+     VALUES (?, ?, ?, '[]', '[]', '规则提炼：preference', 'active', ?)`,
+  );
+  // 旧一点的这条带状态词，新的那条不带：状态层按词面优先，不按时间取。
+  insert.run('preference', '其实可以继续 才十一点半不到', '其实可以继续 才十一点半不到 今天把能做的做完吧', 5 * DAY);
+  insert.run('preference', '别的事', '一条不带状态词的新记录', 9 * DAY);
+  const hits = await retrieve(db, { text: '其实可以继续', recent: [], now: 10 * DAY });
+  const state = hits.filter((h) => h.section === 'state');
+  // 最终排序按 score/t 重排，state 两条谁在前不固定；要的是带状态词那条进池。
+  assert.ok(state.length >= 1);
+  assert.ok(state.some((h) => h.summary.includes('其实可以继续')));
+  db.close();
+});
+
+test('retrieve: 任务句里的「继续」不触发状态层', async () => {
+  const db = makeDb();
+  const hits = await retrieve(db, { text: '继续改 recall 的代码', recent: [], now: 3000 });
+  assert.equal(hits.some((h) => h.section === 'state'), false);
+  db.close();
+});
+
+test('retrieve: 句子里有锚点时状态层不介入', async () => {
+  const db = makeDb();
+  const hits = await retrieve(db, { text: 'lib/recall.js 其实可以继续', recent: [], now: 3000 });
+  assert.equal(hits.some((h) => h.section === 'state'), false);
+  db.close();
+});
 
