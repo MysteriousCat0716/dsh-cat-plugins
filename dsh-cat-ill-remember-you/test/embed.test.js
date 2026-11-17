@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 
 import { openStore } from '../lib/db.js';
-import { cosine, embedPending, endpointReady, nearestByVector, pendingEmbeddings } from '../lib/embed.js';
+import { cosine, embedInput, embedPending, endpointReady, nearestByVector, pendingEmbeddings } from '../lib/embed.js';
 
 function fakeOllama(vectors) {
   return new Promise((resolve) => {
@@ -106,4 +106,13 @@ test('nearestByVector: 按余弦排序，取最相近的', () => {
 
 test('endpointReady: 没开的端口很快返回 false', async () => {
   assert.equal(await endpointReady('http://127.0.0.1:1', 200), false);
+});
+
+test('embedInput: 摘要 + 全文，正文不丢', () => {
+  assert.equal(embedInput({ summary: '摘要', text: '正文' }), '摘要\n\n正文');
+});
+
+test('embedInput: 缺摘要时只用正文，缺正文时只用摘要', () => {
+  assert.equal(embedInput({ summary: '', text: '正文' }), '正文');
+  assert.equal(embedInput({ summary: '摘要', text: '' }), '摘要');
 });

@@ -15,6 +15,15 @@ import net from 'node:net';
 import { embedTextCloudflare, CLOUDFLARE_MODEL, cloudflareReady } from './embed-cf.js';
 
 export const DEFAULT_MODEL = 'qwen3-embedding:0.6b';
+// 向量输入：摘要打头 + 正文，空行让 bge-m3 先看到「这条讲什么」。
+export function embedInput(row) {
+  const summary = String(row.summary ?? '').trim();
+  const text = String(row.text ?? '').trim();
+  if (!text) return summary;
+  if (!summary) return text;
+  return `${summary}\n\n${text}`;
+}
+
 export const DEFAULT_ENDPOINT = 'http://127.0.0.1:11434';
 export const DEFAULT_BATCH = 16;
 export const DEFAULT_TIMEOUT_MS = 30_000;
@@ -113,7 +122,10 @@ export async function embedPending(db, options = {}) {
     for (const row of rows) {
       try {
         vectors.push(
-          await embedTextCloudflare(row.summary || row.text, {
+          // 摘要 + 全文：摘要只有 80 字符，正文平均 551（80% 的条目摘要不到
+          // 正文一半）。只喂摘要，正文后半段对语义完全不可见——C3 的 #1412
+          // 讲的遗忘曲线在正文里，向量里根本没有（2026-11-17 实测）。
+          await embedTextCloudflare(embedInput(row), {
             model,
             timeoutMs: Math.min(timeoutMs, 10_000),
           }),
@@ -129,7 +141,7 @@ export async function embedPending(db, options = {}) {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         model,
-        input: rows.map((row) => row.summary || row.text),
+        input: rows.map((row) => embedInput(row)),
       }),
       signal: AbortSignal.timeout(timeoutMs),
     });
