@@ -946,12 +946,19 @@ export async function retrieve(
           hitSet.has(topTerm) &&
           others.length > 0 &&
           others.every((df) => df >= minDf * 2);
-        if (score <= 0 || (hits < Math.min(2, terms.length) && !rare)) {
+        // 原话召回：summary 直接以这句话开头（或「问：」+ 这句话），说明
+        // 这条记忆就是这句话本身，不是词面碰巧重合——门槛和 echo 都不该挡它。
+        // F 组（原话没被用上）靠这条进池（2026-11-17：F5 #1177 被 low-weak 挡）。
+        const headText = String(item.summary ?? '');
+        const isHead =
+          query.text.length >= 3 &&
+          (headText.startsWith(query.text) || headText.startsWith(`问：${query.text}`));
+        if (!isHead && (score <= 0 || (hits < Math.min(2, terms.length) && !rare))) {
           note('weak', item, 'low-weak');
           continue;
         }
         // 近乎逐字重合的是这句话自己的副本，不是旧事。
-        if (echoOf(item.summary, query.text) >= 0.85) {
+        if (!isHead && echoOf(item.summary, query.text) >= 0.85) {
           note('weak', item, 'echo');
           continue;
         }
@@ -965,6 +972,13 @@ export async function retrieve(
       // 再乘 0.5 上限：按词切了，但词面重合仍是弱证据，这层只该补空位。
       const top = candidates.reduce((max, item) => Math.max(max, item.score), 0);
       for (const item of candidates) item.score = top > 0 ? (item.score / top) * 0.5 : 0;
+      // 原话召回：summary 直接以这句话开头，说明这条记忆就是这句话本身，
+      // 不是「词面碰巧重合」——F 组（原话没被用上）多的就是这种，
+      // IDF 打分把它们压在 0.5 归一化线下面（2026-11-17：F1 #1309 只有 0.42）。
+      for (const item of candidates) {
+        const s = String(item.summary ?? '');
+        if (query.text.length >= 3 && s.startsWith(query.text)) item.score = Math.max(item.score, 0.5);
+      }
       // 候选池不再按时间截断：时间新不等于相关，长文档在过去能靠词多赢。
       // 按分数取前几条交给 push，剩下的会被记成 budget。
       candidates.sort((a, b) => b.score - a.score);
