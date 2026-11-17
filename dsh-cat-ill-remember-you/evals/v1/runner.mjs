@@ -24,6 +24,10 @@ import { DatabaseSync } from 'node:sqlite'
 import { retrieve, renderHint } from '../../lib/recall.js'
 import { CASES } from '../work/cases-v1.mjs'
 
+// 评测按秒连续跑：向量层失败后的 60s 冷却会让后半段整组题都没有语义召回
+// （2026-11-17 实测：H11 一次失败 → H12 起全部 skipped/cooldown）。评测关掉冷却。
+process.env.DSH_MEMORY_CORE_VECTOR_COOLDOWN = '0'
+
 const DB = process.env.DSH_MEMORY_CORE_DB || 'C:/Users/54048/.dsh/memory/core.db'
 const db = new DatabaseSync(DB, { readOnly: true })
 

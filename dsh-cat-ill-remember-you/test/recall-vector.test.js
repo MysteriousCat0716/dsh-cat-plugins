@@ -66,10 +66,10 @@ test('retrieve: 锚点命中一条后，向量仍能补一条没有共享词的�
   }
 });
 
-// 汀第九轮：completed 指「候选搜索正常返回、本层处理完了」，不指「遍历完
-// 所有候选」。向量层命中一条合格的就 break，这种提前结束同样是 completed。
-// 这条测试盯住那个「提前结束」：库里两条都够格，最后只应取回一条。
-test('向量层：命中一条就 break，提前结束仍记 completed', async () => {
+// 汀第九轮定的语义「completed 指候选搜索正常返回、本层处理完了」不变；
+// 但 2026-11-17 改成最多取 3 条：只取 1 条时，多跳题的第二条语义证据
+// 永远进不来（C 组错例里缺失的证据大多不在 weak 词面里）。
+test('向量层：预算内按分数取最多 3 条，不提前停手', async () => {
   const db = openStore(':memory:');
   const insert = db.prepare(
     `INSERT INTO memories (kind, text, summary, why, t) VALUES ('decision', ?, ?, 'z', ?)`,
@@ -101,8 +101,8 @@ test('向量层：命中一条就 break，提前结束仍记 completed', async (
     const vectorHits = hits.filter((hit) => hit.section === 'vector');
     assert.equal(
       vectorHits.length,
-      1,
-      `向量层没有在第一条之后停手，取回了 ${vectorHits.length} 条`,
+      2,
+      `向量层该把两条够格的都取回来（预算内），实际 ${vectorHits.length} 条`,
     );
 
     const vector = (hits.layers || []).find((layer) => layer.name === 'vector');

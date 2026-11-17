@@ -770,12 +770,16 @@ export async function retrieve(
         const model = activeEmbedModel();
         // 3 太小：候选前 3 条常常已被 cache/L2 推过，seen 一拦就一条都补不进来。
         const vectorLimit = Number(process.env.DSH_MEMORY_CORE_VECTOR_LIMIT || 10);
-        const vectorMin = Number(process.env.DSH_MEMORY_CORE_VECTOR_MIN || 0.55);
+        // 0.50：0.55 把真证据挡在门外——C5「星图什么时候开始做」的 #538 是
+        // 0.51，卡 0.55 就只剩一条不相关的 0.55。再低就只剩「都像」的噪音。
+        const vectorMin = Number(process.env.DSH_MEMORY_CORE_VECTOR_MIN || 0.5);
+        // 最多取 3 条：只取 1 条时，多跳题的第二条语义证据永远进不来——
+        // C 组错例里缺失的证据大多不在 weak 的词面里（2026-11-17 实测）。
+        const vectorTop = Number(process.env.DSH_MEMORY_CORE_VECTOR_TOP || 3);
+        let taken = 0;
         const probe = await embedText(query.text, { model, endpoint, timeoutMs: 2500 });
         for (const candidate of nearestByVector(db, probe, { model, limit: vectorLimit })) {
-          // 0.55 不是拍的：真实库里「考研还剩多久」对毕设那条是 0.568，
-          // 卡 0.6 会把它挡掉；再低就只剩「都像」的噪音。最多取一条，
-          // 所以宁可偏宽一点，让它在门内有一次机会。
+          if (taken >= vectorTop || hits.length >= MAX_HITS) break;
           if (candidate.score < vectorMin) {
             note(
               'vector',
@@ -796,9 +800,12 @@ export async function retrieve(
           item.section = 'vector';
           item.score = candidate.score;
           item.why = `这一轮锚点/实体没补满两条；这条语义相近（${candidate.score.toFixed(3)}）。`;
+          const before = hits.length;
           push(item);
-          vectorStatus = 'completed';
-          break;
+          if (hits.length > before) {
+            taken += 1;
+            vectorStatus = 'completed';
+          }
         }
         if (vectorStatus === 'attempted') vectorStatus = 'completed';
       }
@@ -807,7 +814,10 @@ export async function retrieve(
       // 冷却一分钟，别让每轮都再等一次。
       vectorStatus = 'failed';
       vectorReason = 'error';
-      vectorCooldownUntil = Date.now() + 60_000;
+      // 线上 60s 冷却合理（轮次间隔以分钟计）；评测按秒连续跑，冷却会把
+      // 后半段全部跳过——2026-11-17 实测 H11 一次失败后 H12 起全无向量层。
+      const cooldownMs = Number(process.env.DSH_MEMORY_CORE_VECTOR_COOLDOWN || 60_000);
+      vectorCooldownUntil = cooldownMs > 0 ? Date.now() + cooldownMs : 0;
     }
     layers.push({ name: 'vector', ran: true, status: vectorStatus, reason: vectorReason });
   }
