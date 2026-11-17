@@ -24,7 +24,7 @@ import { expandTerms } from './aliases.js';
 
 const REFERRAL = /(之前|上次|上回|那个|这个|这句|这份|这条|这段|那件|那事|还说过|刚才|前面|说过|提过|记得|上一条|刚刚)/;
 export const MAX_HITS = 6;
-const MAX_CHARS = 600;
+const MAX_CHARS = 900;
 const TURN_WINDOW_MS = 30 * 24 * 3600 * 1000;
 const CACHE_SIZE = 3;
 // used 结算窗口：最近这么多条注入记录之外，一律结算成「没用上」。
