@@ -672,7 +672,10 @@ export async function retrieve(
       note('cache', item, given.has(`memory:${item.id}`) ? 'given' : 'no-share');
       continue;
     }
-    item.score = scoreOf(item, query, db, now) || 1;
+    // 量纲统一：scoreOf 是锚点(2)/实体(1)/永久(2)/重要度 的累加，可到 3–4；
+    // weak 归一化后 ≤0.5、vector 是 0–1。同一数组里 3.28 和 0.5 不可比，
+    // cache 条目会把真正的原话证据挤出去（2026-11-17：F5 的 #1177 被 3.28 的三条压后）。
+    item.score = Math.min(1, (scoreOf(item, query, db, now) || 1) / 4);
     item.why = whyOf(item, query) || '刚才还在说它，缓存里直接取。';
     push(item);
   }
