@@ -20,6 +20,12 @@ node_modules/
 .pnpm-store/
 _backups/
 
+# 备份文件（2026-11-17 起不入库：本地移到 _backups/，远程只放源码）
+*.bak
+*.bak-*
+*.orig
+*.rej
+
 # 系统垃圾
 Thumbs.db
 .DS_Store
