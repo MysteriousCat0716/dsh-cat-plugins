@@ -1,0 +1,55 @@
+id    type               out              recall  cand  chars  detail
+H1    single-hop         COVER            1.00    2     5771   
+H2    single-hop         MISS             0.00    6     6301   缺 1452 [#1452 low-weak]
+H3    single-hop         COVER            1.00    3     6072   
+H4    single-hop         COVER            1.00    6     6169   
+H5    single-hop         COVER            1.00    6     6212   
+H6    single-hop         COVER            1.00    6     6137   
+H7    single-hop         COVER            1.00    6     6239   
+H8    single-hop         MISS             0.00    6     6124   缺 1404
+H9    single-hop         COVER            1.00    4     6073   
+H10   single-hop         MISS             0.00    6     6358   缺 1407
+H11   single-hop         PART             0.50    2     5843   缺 1439
+H12   single-hop         COVER            1.00    6     6354   
+F1    failure-reverse    COVER            1.00    6     6179   
+F2    failure-reverse    COVER            1.00    6     6337   
+F3    failure-reverse    COVER            1.00    6     6182   
+F4    failure-reverse    COVER            1.00    6     6134   
+F5    failure-reverse    COVER            1.00    6     6169   
+F6    failure-reverse    COVER            1.00    6     6224   
+F7    failure-reverse    COVER            1.00    6     6216   
+F8    failure-reverse    COVER            1.00    5     6367   
+M1    multi-hop          MISS             0.00    6     6398   缺 861,954
+M2    multi-hop          COVER            1.00    6     6249   
+M3    multi-hop          NO-ANSWER:not-stored -       6     6236   #511 #1006 #999 #3829 #3828 #3827
+M4    multi-hop          MISS             0.00    6     6365   缺 538
+M5    multi-hop          MISS             0.00    4     6184   缺 1254
+M6    multi-hop          PART             0.50    6     6396   缺 1347
+M7    multi-hop          COVER            1.00    6     6340   
+M8    multi-hop          MISS             0.00    1     5761   缺 1233,1414
+M9    multi-hop          MISS             0.00    1     5698   缺 953,950
+M10   multi-hop          COVER            1.00    3     5972   
+C1    boundary-temporal  COVER            1.00    6     6337   
+C2    boundary-temporal  MISS             0.00    2     5923   缺 924 [#924 low-weak]
+C3    boundary-temporal  MISS             0.00    6     6343   缺 1412
+C4    boundary-literal   MISS             0.00    6     6340   缺 1434
+C5    boundary-temporal  MISS             0.00    2     5879   缺 538
+C6    boundary-temporal  MISS             0.00    6     6187   缺 1407
+C7    boundary-literal   COVER            1.00    6     6254   
+C8    boundary-literal   MISS             0.00    6     6212   缺 1438
+C9    abstention         NO-ANSWER:undecided -       6     6360   #1467 #1832 #306 #1291 #690 #1094
+C10   boundary-literal   COVER            1.00    6     6187   
+
+可回答题 38 / 共 40（不可答 2）
+  single-hop         EvidenceRecall 70.8%  CompleteCoverage 66.7%（8/12）
+  failure-reverse    EvidenceRecall 100.0%  CompleteCoverage 100.0%（8/8）
+  multi-hop          EvidenceRecall 38.9%  CompleteCoverage 33.3%（3/9）
+  boundary-temporal  EvidenceRecall 20.0%  CompleteCoverage 20.0%（1/5）
+  boundary-literal   EvidenceRecall 50.0%  CompleteCoverage 50.0%（2/4）
+总计 EvidenceRecall 60.5%  CompleteCoverage 57.9%（22/38）
+候选池平均 5.0 条 / 6171 字符（≈3085 token 粗估）
+辅助背景命中 4/14；related 误入 2 条、其中「证据没齐却先进了错的」 0 题
+缺证据的题：H2(1452) H8(1404) H10(1407) H11(1439) M1(861,954) M4(538) M5(1254) M6(1347) M8(1233,1414) M9(953,950) C2(924) C3(1412) C4(1434) C5(538) C6(1407) C8(1438)
+  M3 NO-ANSWER:not-stored：候选 #511 #1006 #999 #3829 #3828 #3827
+  C9 NO-ANSWER:undecided：候选 #1467 #1832 #306 #1291 #690 #1094
+第二层 InjectionRecall 与第一层相同（renderHint 不截断）——这是现状，不是两边都测了。

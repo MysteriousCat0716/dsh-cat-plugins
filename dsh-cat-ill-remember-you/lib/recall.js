@@ -92,11 +92,40 @@ const WEAK_STOP = new Set([
 const WEAK_NOISE = /[什么怎么哪吗呢吧啊呀了的么这那个]/;
 const SEGMENTER = new Intl.Segmenter('zh', { granularity: 'word' });
 
+/**
+ * ASCII 碎片过滤（2026-11-17，针对 #1814 最近一句噪声）。
+ *
+ * 实测：一句「现在记忆插件是什么状况」的回复里带着 `ab9..dfb0245 main origin`，
+ * 弱匹配抓到的三条全是这种词面重合——git hash、区间标记、分支名。它们 df 小、
+ * 看着稀有，能把真正的线索挤下去。判据只收三类，其余放行：
+ *   1) 会话里高频出现但不指向主题的 git/CLI 词（df 骗人：写进句子的少，不等于稀有）；
+ *   2) 纯十六进制 7–40 位（commit hash / 行号）；
+ *   3) 没有连续三个字母的（`v0.8.43`、`a1b2c3`、纯数字）和 `a..b` 区间。
+ * 含非 ASCII 的词不归这里管——中文词一律放行。
+ */
+const ASCII_STOP = new Set([
+  'main', 'master', 'origin', 'head', 'branch', 'commit', 'push', 'pull',
+  'merge', 'rebase', 'fetch', 'clone', 'stash', 'remote', 'diff', 'repo',
+]);
+export function asciiNoise(term) {
+  const raw = String(term ?? '');
+  if (!raw || !/^[\x20-\x7e]+$/.test(raw)) return false;
+  const t = raw.toLowerCase();
+  if (ASCII_STOP.has(t)) return true;
+  if (/^[0-9a-f]{7,40}$/.test(t)) return true;
+  if (/\d\.\.|\.\.\d/.test(raw)) return true;
+  if (/^\d+$/.test(t)) return true;
+  if (!/[a-z]{3,}/.test(t)) return true;
+  return false;
+}
+
 export function weakTerms(text) {
   const s = String(text ?? '');
   if (!s) return [];
   const out = new Set();
-  for (const match of s.matchAll(/[A-Za-z][A-Za-z0-9_.-]{3,}/g)) out.add(match[0]);
+  for (const match of s.matchAll(/[A-Za-z][A-Za-z0-9_.-]{3,}/g)) {
+    if (!asciiNoise(match[0])) out.add(match[0]);
+  }
 
   // 先按 ICU 里的中文词表切——「车站」不会再拆成「车」和「站」两个单字。
   // 词典里的技术词（缓存、破甲）会被切成单字，所以连续单字再两两拼回来。
@@ -128,7 +157,7 @@ export function weakTerms(text) {
   flush();
 
   for (const term of words) {
-    if (WEAK_STOP.has(term) || WEAK_NOISE.test(term)) continue;
+    if (WEAK_STOP.has(term) || WEAK_NOISE.test(term) || asciiNoise(term)) continue;
     out.add(term);
   }
   return [...out].slice(0, 8);

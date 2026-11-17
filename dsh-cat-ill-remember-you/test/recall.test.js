@@ -563,6 +563,23 @@ test('weakTerms: 按词切，不再把「之前先」这种跨词窗口当证据
   assert.ok(!terms.includes('之前先'));
 });
 
+test('weakTerms: git hash / 分支名这类 ASCII 碎片不进弱匹配（#1814）', async () => {
+  // 2026-11-17 实测：召回三条全是「词面重合 ab9..dfb0245、main、origin」。
+  const terms = weakTerms('ab9..dfb0245 main origin 这个提交');
+  assert.equal(terms.includes('main'), false);
+  assert.equal(terms.includes('origin'), false);
+  assert.equal(terms.some((t) => t.includes('..')), false);
+  assert.ok(!terms.some((t) => /^[0-9a-f]{7,40}$/.test(t)));
+});
+
+test('weakTerms: 有信息量的英文词仍然保留', async () => {
+  const terms = weakTerms('bge-m3 向量和 SQLite 存储，recall.js 里的 weakTerms');
+  assert.ok(terms.includes('bge-m3'));
+  assert.ok(terms.includes('SQLite'));
+  assert.ok(terms.includes('recall.js'));
+  assert.ok(terms.includes('weakTerms'));
+});
+
 test('markRecallUsed: 滑出最近 40 条的旧记录结算为 0，不再永远 NULL', async () => {
   const db = openStore(':memory:');
   const memory = db
