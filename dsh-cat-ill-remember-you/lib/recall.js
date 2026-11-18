@@ -588,6 +588,18 @@ export async function retrieve(
     });
   };
 
+  // scoreOf 的原始分是锚点(2)/实体(1)/永久(2)/重要度的累加，可到 3–4；而 weak
+  // 归一化后 ≤0.5、vector 是 0–1、state 是 0.55。同一个 hits 数组里两种量纲不可比——
+  // 3.28 的锚点条目会把向量与弱匹配挤走（2026-11-17 F5 的 #1177 被三条 3.28 压后）。
+  // cache 层当晚已归一，这里抽成一处给各层共用；L2 锚点层 2026-11-18 跟上。
+  // 0 必须保持 0：锚点层靠 `if (!item.score) continue` 丢掉「一个字都没对上」的
+  // 候选，floor 参数只给 cache 层留底分（它本来就是最近三条，不该垫到 0）。
+  const normScore = (raw, floor = 0) => {
+    const value = Number(raw) || 0;
+    if (value <= 0) return floor;
+    return Math.min(1, value / 4);
+  };
+
   const push = (item) => {
     if (!item || !item.why || seen.has(`${item.source}:${item.id}`)) return;
     seen.add(`${item.source}:${item.id}`);
@@ -672,10 +684,7 @@ export async function retrieve(
       note('cache', item, given.has(`memory:${item.id}`) ? 'given' : 'no-share');
       continue;
     }
-    // 量纲统一：scoreOf 是锚点(2)/实体(1)/永久(2)/重要度 的累加，可到 3–4；
-    // weak 归一化后 ≤0.5、vector 是 0–1。同一数组里 3.28 和 0.5 不可比，
-    // cache 条目会把真正的原话证据挤出去（2026-11-17：F5 的 #1177 被 3.28 的三条压后）。
-    item.score = Math.min(1, (scoreOf(item, query, db, now) || 1) / 4);
+    item.score = normScore(scoreOf(item, query, db, now), 0.25);
     item.why = whyOf(item, query) || '刚才还在说它，缓存里直接取。';
     push(item);
   }
@@ -724,7 +733,7 @@ export async function retrieve(
         note('anchor', item, 'given');
         continue;
       }
-      item.score = scoreOf(item, query, db, now);
+      item.score = normScore(scoreOf(item, query, db, now));
       if (!item.score) continue;
       scored.push(item);
     }
@@ -780,7 +789,11 @@ export async function retrieve(
         // C 组错例里缺失的证据大多不在 weak 的词面里（2026-11-17 实测）。
         const vectorTop = Number(process.env.DSH_MEMORY_CORE_VECTOR_TOP || 3);
         let taken = 0;
-        const probe = await embedText(query.text, { model, endpoint, timeoutMs: 2500 });
+        // 6000ms：2026-11-18 实测 20 次真实 query 的 p50 887ms、p90 1537ms、p95 2829ms——
+        // 原来的 2500ms 正好压在 p95 上，约 5% 的轮次会整题降级成词面召回
+        // （抖动诊断：40 题跑三遍，3 题的命中集合随向量层 failed/error 变化）。
+        // 代价是云端真挂时这一层多等 3.5 秒才降级，换来不随机的召回。
+        const probe = await embedText(query.text, { model, endpoint, timeoutMs: 6000 });
         for (const candidate of nearestByVector(db, probe, { model, limit: vectorLimit })) {
           if (taken >= vectorTop || hits.length >= MAX_HITS) break;
           if (candidate.score < vectorMin) {
