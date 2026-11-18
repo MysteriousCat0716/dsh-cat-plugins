@@ -787,6 +787,8 @@ export async function retrieve(
         const vectorMin = Number(process.env.DSH_MEMORY_CORE_VECTOR_MIN || 0.5);
         // 最多取 3 条：只取 1 条时，多跳题的第二条语义证据永远进不来——
         // C 组错例里缺失的证据大多不在 weak 的词面里（2026-11-17 实测）。
+        // 3：2026-11-18 试过 5，三次评测 67.1/67.1（基线 71.1）——多取的两条
+        // 挤掉了弱匹配与锚点层的真证据，不是越多越好。
         const vectorTop = Number(process.env.DSH_MEMORY_CORE_VECTOR_TOP || 3);
         let taken = 0;
         // 6000ms：2026-11-18 实测 20 次真实 query 的 p50 887ms、p90 1537ms、p95 2829ms——
