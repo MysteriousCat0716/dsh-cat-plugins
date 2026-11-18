@@ -793,7 +793,14 @@ export async function retrieve(
         // 原来的 2500ms 正好压在 p95 上，约 5% 的轮次会整题降级成词面召回
         // （抖动诊断：40 题跑三遍，3 题的命中集合随向量层 failed/error 变化）。
         // 代价是云端真挂时这一层多等 3.5 秒才降级，换来不随机的召回。
-        const probe = await embedText(query.text, { model, endpoint, timeoutMs: 6000 });
+        let probe;
+        try {
+          probe = await embedText(query.text, { model, endpoint, timeoutMs: 6000 });
+        } catch {
+          // 一次重试：抖动多半是瞬时的（限流、握手），第二次通常就回来。
+          // 用更短的超时——云端真挂时这一层最多卡 9 秒，不是 12。
+          probe = await embedText(query.text, { model, endpoint, timeoutMs: 3000 });
+        }
         for (const candidate of nearestByVector(db, probe, { model, limit: vectorLimit })) {
           if (taken >= vectorTop || hits.length >= MAX_HITS) break;
           if (candidate.score < vectorMin) {
