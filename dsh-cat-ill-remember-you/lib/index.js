@@ -931,6 +931,8 @@ export function apply(ctx) {
           try {
             const ids = hits.filter((hit) => hit.source === 'memory').map((hit) => hit.id);
             if (ids.length > 0) {
+              // last_used 自 2026-11-17 起已退役（forget 判据改看 recall_log.usedAt），
+              // 保留这三个写点只为迁移期兼容旧账本；不要再拿它当判据（W-08）。
               db.prepare(
                 `UPDATE memories SET last_used = ? WHERE id IN (${ids.map(() => '?').join(',')})`,
               ).run(Date.now(), ...ids);

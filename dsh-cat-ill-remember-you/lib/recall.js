@@ -613,7 +613,9 @@ export async function retrieve(
 
   // 常驻段：先占好位置，再让下面按需取回跳过它们。
   const persona = personaOf(db);
-  for (const item of persona) seen.add(`memory:${item.id}`);
+  // persona 与 memories 是两张表，id 天然不碰撞，这一行不是去重、只是把常驻
+  // 条目登记进 seen 免得下面按需层重复给（2026-11-20 渡彻查 W-07：原先按
+  // 'memory:persona:N' 前缀登记，与 push 用的 'memory:N' 永不相等，等于 no-op）。
 
   // 人物分区：这轮提到的实体，查与它有关的旧事，最多一条。
   if (query.entities.length) {
@@ -777,7 +779,7 @@ export async function retrieve(
     try {
       const endpoint = (
         process.env.DSH_MEMORY_CORE_OLLAMA || DEFAULT_ENDPOINT
-      ).replace(/\\+$/, '');
+      ).replace(/\/+$/, ''); // 去 URL 尾部斜杠；原先写反为反斜杠（W-10）
       const backend = activeBackend();
       if (backend !== 'cloudflare' && !(await endpointReady(endpoint))) {
         vectorStatus = 'failed';
@@ -1007,7 +1009,12 @@ export async function retrieve(
       // IDF 打分把它们压在 0.5 归一化线下面（2026-11-17：F1 #1309 只有 0.42）。
       for (const item of candidates) {
         const s = String(item.summary ?? '');
-        if (query.text.length >= 3 && s.startsWith(query.text)) item.score = Math.max(item.score, 0.5);
+        // 判据必须与入门槛（isHead，上面 :983 处）一致：那里认「原句」和
+        // 「问：＋原句」两种开头，这里只认前一种，于是同一语义一个门能进、
+        // 进来后又拿不到保底分（2026-11-20 渡彻查 W-09）。
+        const head =
+          s.startsWith(query.text) || s.startsWith(`问：${query.text}`);
+        if (query.text.length >= 3 && head) item.score = Math.max(item.score, 0.5);
       }
       // 候选池不再按时间截断：时间新不等于相关，长文档在过去能靠词多赢。
       // 按分数取前几条交给 push，剩下的会被记成 budget。
