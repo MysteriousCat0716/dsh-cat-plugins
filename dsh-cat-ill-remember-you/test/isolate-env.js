@@ -14,3 +14,17 @@ process.env.DSH_CLOUDFLARE_FILE = path.join(
   os.tmpdir(),
   `dsh-test-no-cloudflare-${process.pid}.json`,
 );
+
+// 同一个病的后门：配置文件路径堵住了，环境变量没堵。本机把这两个变量配在
+// 用户环境里（注册表），于是「没有云端配置时默认关」这类用例在别人机器上全绿、
+// 在这台机器上必红——假失败看多了就没人信测试，毒害的是后续一切验证。
+// 2026-11-20 渡彻查 W-01 实测：干净环境 285/285，本机 32/36。
+// 要测向量层的用例本来就在用例内显式设 env（见 vectors-off.test.js:38-45），不受影响。
+delete process.env.DSH_MEMORY_CORE_EMBED_BACKEND;
+delete process.env.DSH_MEMORY_CORE_VECTOR;
+
+// 同一类泄漏：集成测试会往真实的 ~/.dsh/cache/ill-remember-you.log 追加日志。
+process.env.DSH_MEMORY_CORE_LOG = path.join(
+  os.tmpdir(),
+  `dsh-test-ill-remember-you-${process.pid}.log`,
+);

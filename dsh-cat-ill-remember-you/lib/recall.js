@@ -502,7 +502,12 @@ export function scoreOf(item, query, db, now = Date.now()) {
   const importance = Number(item.importance) > 0 ? Number(item.importance) : 3;
   score += (importance - 3) * 0.8;
   // 提取强度：越常被真的用出来的记忆，越容易被再取回。
-  score += usedBoost(db, item.id, now);
+  // 只对记忆项成立：原文层（turn）与 memories 是两套自增 id，同号不同物。
+  // 按 id 去查记忆的使用记录，会把「某条记忆常被使用」的分数借给一条无关的旧
+  // 原文（2026-11-20 渡彻查 W-02b：turn#1 借 memory#1 的 10 条 used，得分
+  // 3.5315 vs 同锚点对照 2.8854，差值 0.646 恰为 usedBoost 的理论值）。
+  const memoryScoped = item.source !== 'turn';
+  if (memoryScoped) score += usedBoost(db, item.id, now);
   // 近因：人的联想里，昨天的事比三个月前的事先浮上来。乘在总分上，
   // 不另起一维——分数仍是「这次命中值多重」。
   // 情绪只改保留期（retentionOf），不额外加分：
@@ -510,7 +515,7 @@ export function scoreOf(item, query, db, now = Date.now()) {
   let total = score * recencyOf(item, now);
   // 被后来的说法取代过：仍然可以召回（用户可能正是在问旧说法），
   // 但让位给现在还成立的那条。0.35 是让它在强命中的旧条面前仍能翻上来。
-  if (supersededBy(db).has(Number(item.id))) total *= 0.35;
+  if (memoryScoped && supersededBy(db).has(Number(item.id))) total *= 0.35;
   return total;
 }
 
@@ -1067,7 +1072,10 @@ export async function retrieve(
       // 同一句已经在上下文里的情况由上一行的 text 比较挡掉。
       // 没有名词时 whyOf 交回空串，push 会把整条丢掉；这里补一句来源说明，
       // 否则「只有指代」这条通路等于白改。
-      item.score = terms.length ? scoreOf(item, query, db, now) : 0.05;
+      // 归一与上层同口径：原文项的原始分可到 3–4，不归一就会把归一后的各层
+      // （≤1）整片压下去，指代轮次里一条 30 天窗口内的旧原文系统性抢占注入位。
+      // 2026-11-20 渡彻查 W-02a：L3 是 cache/L2 之后漏网的第三处。
+      item.score = terms.length ? normScore(scoreOf(item, query, db, now)) : 0.05;
       item.why = terms.length
         ? whyOf(item, query)
         : '这一轮只有指代、抽不出名词；按「上次那件事」回看最近的原文。';
