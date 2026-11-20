@@ -10,7 +10,7 @@
 
 - **M0 原文入库**：`session/event` 的 `user/message` / `assistant/message` 写进 `turns`；按 `(sid, seq, role)` 幂等；只取 text 块；运行时上下文、记忆提示、子代理委派、替换块等机器串挡在门外。
 - **M1 规则提炼**：空闲 5 分钟后把未消费的 turns 分成「user + 其后 assistant」的块，按判断/偏好/事实三类提炼成 `memories`，抽锚点与实体。表态句（`JUDGE` 命中）走即时通道：用户那句话落库后，等这一轮的 assistant 落完、静默 30 秒再炼，多步回复不会在第一步就炼出孤儿块；只收 `decision` / `preference`，其余交回空闲批。接模型时只换 `refine()` 内部，接口不变。
-- **M2 三级取回**：L1 最近 3 条 / L2 锚点与实体 / L2.4 向量 / L2.5 弱匹配 / L3 turns 原文（按 cwd 只回看当前 workspace）。每轮注入 1–2 条、≤600 字，落 `recall_log`。
+- **M2 三级取回**：L1 最近 3 条 / L2 锚点与实体 / L2.4 向量 / L2.5 弱匹配 / L3 turns 原文（按 cwd 只回看当前 workspace）。每轮最多 6 条、正文合计 ≤900 字（常量 `MAX_HITS` / `MAX_CHARS`，2026-11-20 更正：原写「1–2 条 / 600 字」，那组数在 0.8.x 扩容后没跟着改）。落 `recall_log`。
   - 同分区按 `anchors × 2 + entities` 打分，不再按时间取最新；L2 候选池 24 条。
   - 「这一轮已经给过」按 `recall_log.memory_id` 抑制，不按词面重合——否则越在聊越不召回。
   - L3 只要句子带指代就回看最近原文；只有指代、抽不出名词时也翻（「你还记得上次那件事吗」）。
@@ -18,7 +18,7 @@
   - 向量（默认关）：`lib/embed.js` 调本机 Ollama `/api/embed`（默认 `qwen3-embedding:0.6b`，1024 维），回填在 `embeddings` 表；锚点/实体没补满两条就跑一次，余弦 ≥0.55 补一条，连不上 60 秒冷却。**要 `DSH_MEMORY_CORE_VECTOR=on` 才开**——这一层需要 Ollama 常驻，收益上限是补一条候选，纯 SQLite 的锚点/实体/弱匹配三层不需要它。
   - 注入走宿主 `systemPrompt.context` 动态上下文，不塞 `decision.messages`——后者会被宿主 append 成 `user/message`，显示成用户气泡。
 - **M3 影子账本**：黑名单外每轮算「如果替换会删掉什么、补上什么」，落 `shadow_v2`；黑名单里的会话完全不记账（这些会话不会真替换，记账只会随宿主压缩无限涨）。
-- **M4 遗忘**：每日一次，按取回/验证时间降 tier，只标不删，落 `forget_log`。保留期分三档：`permanent` 永不降级（偏好）、`ephemeral` 7 天没碰沉 dormant（情绪）、`auto` 走默认曲线（30/90 天）。
+- **M4 遗忘**：每日一次，按取回/验证时间降 tier，只标不删，落 `forget_log`。保留期分三档：`permanent` 永不降级（偏好）、`ephemeral` 短时效（给未来可能出现的短命内容留的档）、`auto` 走默认曲线（30/90 天）。**情绪不走 ephemeral**——2026-11-20 更正：早先给 emotion 设成 7 天沉，等于把「那天你很难过」当成一条状态日志；`extract.js` 的 `retentionOf()` 已改回 `auto`，理由写在源码注释里：情绪不该比事实沉得快。
 - **M5 短期栈**：每说一句，把指针（`sid` / `seq` / `t`）压进 `context_stack`。存储上每个会话留最近 40 条 active、全局 400 条兜底——容量是存储问题，本会话再长也不挤掉别的会话。注入时按会话新→旧分配字数预算（900 / 700 / 550 / 450 / 350 / 250），本会话再切 600 字；从每个会话的尾部往回装**整轮**，一轮要么全进要么全不进；最近 2 轮用原文，更早的用出栈摘要；总硬顶 3000 字。注入按时间正序，时间戳用本机时区。所有会话都注入；黑名单里的会话另有「只预览、不改历史」的标注。
   - 出栈只按**未出栈**的行数计数——表里留着历史指针，用总数算会把 active 全挤掉。
   - 侧栏「记忆」页签里有栈面板：列出每个会话最新入栈的指针（会话名 + 会话号），滑条调「多少条进入全局注入」（30–50），勾选可删行，删掉的行只不进注入，`turns` 里的原文一个字不动。面板只读写 `~/.dsh/cache/stack-limit.txt` 与 `stack-exclude.txt`，改完立刻生效。
@@ -72,7 +72,7 @@ for f in test/*.test.js; do node "$f"; done
 | `DSH_MEMORY_CORE_EMBED_MODEL` | `qwen3-embedding:0.6b` | 向量模型 |
 | `DSH_MEMORY_CORE_OLLAMA` | `http://127.0.0.1:11434` | Ollama 地址 |
 | `DSH_MEMORY_CORE_EMBED_BATCH` | `16` | 每批补多少条向量 |
-| `DSH_MEMORY_CORE_VECTOR` | `off` | 设 `on` 才用向量召回（需要本机 Ollama） |
+| `DSH_MEMORY_CORE_VECTOR` | 看后端 | 显式 `off` 关、显式 `on` 开；**没设时跟着 `activeBackend()`**——配好 cloudflare 就默认 on（纯 HTTP，不需常驻进程），配 ollama 或没配则 off。2026-11-20 更正：原写「默认 off」，会让人以为本机向量层是关着的 |
 | `DSH_MEMORY_CORE_ALIASES` | `~/.dsh/memory/aliases.json` | 别名表文件位置 |
 | `DSH_MEMORY_CORE_STACK` | `on` | 短期栈（A1 接续层）开关 |
 | `DSH_MEMORY_CORE_PEOPLE` | `on` | 人物层（A3）开关 |
