@@ -84,6 +84,7 @@ for f in test/*.test.js; do node "$f"; done
 | `DSH_MEMORY_CORE_KEEP` | `10` | 旧模式保留多少条原文（roll 模式按 `KEEP_TAIL` 固定 6） |
 | `DSH_MEMORY_CORE_SHADOW_WINDOW` | `40` | 旧模式每次被换窗口最多取多少条 |
 | `DSH_MEMORY_CORE_ROLL` | `1` | roll 模式；`0` 退回按比例一次换一段 |
+| `DSH_MEMORY_CORE_SHADOW_V1` | `off` | 旧架构影子账（`shadow_log`）。2026-11-20 起默认关：那张表全库只写不读，而它对每条消息的每个 token 现场编译正则（渡彻查 W-06）。观察一周无人读后整链删除 |
 
 ## 已知缺口
 
@@ -92,3 +93,4 @@ for f in test/*.test.js; do node "$f"; done
 - 真替换只对黑名单之外的会话生效；几千字的大窗口路径还没实跑。
 - 工具原文取回：小结果摘录已在 a7d24d 的替换块里验证；大结果的 `refId` 取回路径还没实撞上。
 - `persona` 表已导入 mnemon 的常驻条目，但默认不注入；提炼层还没做「从对话里长出偏好/判断」。
+- **原文读取层已建未接**（2026-11-20 标注，渡彻查 W-05）：`lib/split.js`（M2 消息分段）与 `lib/originals.js` 的 `toolOriginals` / `originalMessages` / `recentSessionOriginals` 都有测试覆盖，但生产路径零引用——生产只用了 `refPointerOf` / `spillPathOf`。它们是 M6 大窗口「按 seq 回查原文」的零件，尚未接线；不是烂尾，别当死代码删。

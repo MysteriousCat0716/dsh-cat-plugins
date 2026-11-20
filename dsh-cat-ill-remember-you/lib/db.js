@@ -257,6 +257,10 @@ export function openStore(file = DEFAULT_DB_FILE) {
     // 衰减：forget_n = 已经降过几次级（间隔按 1.5^n 递增），forget_at = 上一次
     // 降级的时刻——下一段间隔从那一刻起算，而不是从写入时间。没有 forget_at
     // 的话，一条沉睡了两年的记忆一进 dormant 就会立刻被判成 cold。
+    // 向量回填失败计数：付费 API 每 60 秒重试一次永不退避，会把配额烧在一个
+    // 内容级永久失败的条目上（2026-11-20 渡彻查 W-04）。攒到 3 次先跳过，
+    // 人工排查后把这一列清 0 即可重试。
+    ensureColumn(db, 'memories', 'embed_fails', 'INTEGER NOT NULL DEFAULT 0');
     ensureColumn(db, 'memories', 'forget_n', 'INTEGER NOT NULL DEFAULT 0');
     ensureColumn(db, 'memories', 'forget_at', 'INTEGER');
     ensureColumn(db, 'turns', 'scanned_at', 'INTEGER NOT NULL DEFAULT 0');

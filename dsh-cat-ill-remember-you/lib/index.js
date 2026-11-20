@@ -938,14 +938,18 @@ export function apply(ctx) {
           } catch (error) {
             log(`last_used failed: ${error?.message ?? error}`);
           }
-          // M3 影子：算「如果替换会少给多少、补多少」，只记账，不改 messages。
-          try {
-            const plan = shadowPlan({ messages, hits, query: currentText });
-            plan.hintChars = text.length;
-            recordShadow(db, { sid, turn: turnNo, ...plan });
-            if (plan.replaced > 0) log(`shadow replaced=${plan.replaced} saved=${plan.replacedChars} added=${plan.added}`);
-          } catch (error) {
-            log(`shadow failed: ${error?.message ?? error}`);
+          // M3 影子（旧架构账本）：shadow_log 全库只写不读，而它对每条消息的每个
+          // token 现场 new RegExp——纯开销（2026-11-20 渡彻查 W-06）。默认关；
+          // 留环境变量给需要复现旧数据的人。观察一周确认无人读后整链删除。
+          if (process.env.DSH_MEMORY_CORE_SHADOW_V1 === 'on') {
+            try {
+              const plan = shadowPlan({ messages, hits, query: currentText });
+              plan.hintChars = text.length;
+              recordShadow(db, { sid, turn: turnNo, ...plan });
+              if (plan.replaced > 0) log(`shadow replaced=${plan.replaced} saved=${plan.replacedChars} added=${plan.added}`);
+            } catch (error) {
+              log(`shadow failed: ${error?.message ?? error}`);
+            }
           }
           hintParts.push(text);
         }

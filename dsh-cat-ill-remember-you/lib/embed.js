@@ -25,7 +25,8 @@ export function embedInput(row) {
 }
 
 export const DEFAULT_ENDPOINT = 'http://127.0.0.1:11434';
-export const DEFAULT_BATCH = 16;
+export const EMBED_FAIL_LIMIT = 3;
+const DEFAULT_BATCH = 16;
 export const DEFAULT_TIMEOUT_MS = 30_000;
 
 /**
@@ -90,6 +91,23 @@ function toBlob(vector) {
  * @param {{model?:string, endpoint?:string, limit?:number, timeoutMs?:number, now?:number}} [options]
  * @returns {Promise<{embedded:number, model:string, dim?:number}>}
  */
+/**
+ * 待回填的条目：没有该模型的向量、且失败次数还没到上限。
+ * 抽成导出的纯查询是为了能单测「失败 3 次后不再被选中」——这段逻辑一旦回退，
+ * 内容级永久失败的条目会每 60 秒烧一次付费配额且永不停止（2026-11-20 W-04）。
+ */
+export function pendingMemoryRows(db, model, limit) {
+  return db
+    .prepare(
+      `SELECT m.id, m.summary, m.text, COALESCE(m.embed_fails, 0) AS fails FROM memories m
+       LEFT JOIN embeddings e ON e.memory_id = m.id AND e.model = ?
+       WHERE e.id IS NULL AND m.tier IN ('active','dormant')
+         AND COALESCE(m.embed_fails, 0) < ?
+       ORDER BY m.t DESC LIMIT ?`,
+    )
+    .all(model, EMBED_FAIL_LIMIT, limit);
+}
+
 export async function embedPending(db, options = {}) {
   const model = activeEmbedModel(options.model);
   const backend = activeBackend();
@@ -102,18 +120,12 @@ export async function embedPending(db, options = {}) {
   const timeoutMs = positive(options.timeoutMs, DEFAULT_TIMEOUT_MS);
   const now = Number.isFinite(options.now) ? options.now : Date.now();
 
-  const rows = db
-    .prepare(
-      `SELECT m.id, m.summary, m.text FROM memories m
-       LEFT JOIN embeddings e ON e.memory_id = m.id AND e.model = ?
-       WHERE e.id IS NULL AND m.tier IN ('active','dormant')
-       ORDER BY m.t DESC LIMIT ?`,
-    )
-    .all(model, limit);
+  const rows = pendingMemoryRows(db, model, limit);
   if (rows.length === 0) return { embedded: 0, model };
 
   let vectors;
   let failed = 0;
+  const failedIds = [];
   if (backend === 'cloudflare') {
     // bge-m3 的 Workers AI 接口按条返回；一次失败不该把整批打回，逐条取。
     // 单条超时/限流就记 null 跳过，下一轮回填还会再遇到它——整批抛错的话，
@@ -132,6 +144,7 @@ export async function embedPending(db, options = {}) {
         );
       } catch {
         failed += 1;
+        failedIds.push(row.id);
         vectors.push(null);
       }
     }
@@ -178,12 +191,20 @@ export async function embedPending(db, options = {}) {
     `INSERT OR REPLACE INTO embeddings (memory_id, model, dim, vec, t)
      VALUES (?, ?, ?, ?, ?)`,
   );
+  // 失败要记账，否则「内容级永久失败」会被每轮重试到天荒地老（W-04）：
+  // 攒满 EMBED_FAIL_LIMIT 次先从筛选里剔除，人工清 0 可重试。成功则清零。
+  const bumpFails = db.prepare(
+    'UPDATE memories SET embed_fails = COALESCE(embed_fails, 0) + 1 WHERE id = ?',
+  );
+  const clearFails = db.prepare('UPDATE memories SET embed_fails = 0 WHERE id = ?');
   db.exec('BEGIN');
   try {
     for (let i = 0; i < rows.length; i += 1) {
       if (!vectors[i]) continue;
       insert.run(rows[i].id, model, dim, toBlob(vectors[i]), now);
+      if (rows[i].fails) clearFails.run(rows[i].id);
     }
+    for (const id of failedIds) bumpFails.run(id);
     db.exec('COMMIT');
   } catch (error) {
     db.exec('ROLLBACK');
