@@ -613,9 +613,11 @@ export async function retrieve(
 
   // 常驻段：先占好位置，再让下面按需取回跳过它们。
   const persona = personaOf(db);
-  // persona 与 memories 是两张表，id 天然不碰撞，这一行不是去重、只是把常驻
-  // 条目登记进 seen 免得下面按需层重复给（2026-11-20 渡彻查 W-07：原先按
-  // 'memory:persona:N' 前缀登记，与 push 用的 'memory:N' 永不相等，等于 no-op）。
+  // persona 条目的 id 是 'persona:N'（见 personaOf），与 memories 的数字 id
+  // 不同源；这里登记的 'memory:persona:N' 与按需层的 'memory:1' 永不相等，
+  // 所以这一行目前挡不住任何东西（2026-11-20 渡彻查 W-07）。留着是防备将来
+  // 某层能把 persona 条目再给一次；真要做语义去重，得拿 persona 正文做 echoOf
+  // 抑制——那件事没做，只标注。
 
   // 人物分区：这轮提到的实体，查与它有关的旧事，最多一条。
   if (query.entities.length) {
