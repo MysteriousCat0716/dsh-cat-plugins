@@ -30,3 +30,16 @@ plugins/
 ## 来历
 
 原仓库叫 `记忆核心`，只装 `dsh-cat-ill-remember-you`。2026-11-07 重组为插件集合：插件全部提到根目录，文档收进 `docs/`，改名 `dsh-cat-plugins`。提交历史保留。
+
+## 改插件的七步
+
+2026-11-20 从 `~/.dsh/self/RULES.md`（已删）搬来。**机制按现状重写**——原文的「打包」和「robocopy 同步运行体」两步，在 `link:` 模式下都不成立。
+
+1. **语法**：`node --check lib/index.js`。有客户端脚本的，在插件目录跑 `node tools/check-client.mjs lib/client.js`，期望 `APPLY OK`（目前只有 `dsh-cat-think` 带这个工具）。行为改动用临时探针覆盖，探针 `_` 开头、跑完删。
+2. **升版本**：改 `package.json` 的 `version` 与 `description`。
+3. **不需要同步**：profile 的 `package.json` 用 `link:` 指向本仓库目录（见 `~/.dsh/profiles/desktop/package.json:15-25`），`node_modules` 里是符号链接——**改源码即生效，没有打包，没有 robocopy**。
+4. **依赖或包名变了**：在 profile 目录跑 `pnpm install`，`pnpm-lock.yaml` 跟着变；版本、dependencies、lock 三处一起改，少一处下次 install 会装回旧的。
+5. **改第三方插件**（不是本仓库的）：走 `pnpm patch`，产物落 `~/.dsh/profiles/desktop/patches/`（本仓库 `工具/patches/` 只存已经落成的副本），README 写清原因与恢复步骤（`@jipika/dsh-memory` 的 slugOf 是现成例子）。
+6. **提交**：源码仓库提交，写目的与影响。
+7. **重载**：宿主不重读 `package.json` 的元数据（版本、描述），改这两样要托盘重启；只改 `lib/*.js` 多数情况下热重载就够。
+
